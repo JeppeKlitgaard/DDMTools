@@ -1,0 +1,14 @@
+[flake8]
+exclude =
+    .git,
+    __pycache__,
+    .venv,
+    venv,
+    .ipynb_checkpoints,
+
+max-line-length = 100
+
+ignore =
+    E741,  # Ambiguous name
+    E203,  # Whitebespace before ":"
+    W503,  # Linebreak before binary operator

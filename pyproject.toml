@@ -1,0 +1,114 @@
+[tool.poetry]
+name = "ddmtools"
+version = "0.1.0"
+description = "A Python library for doing differential dynamic microscopy on polydisperse samples"
+authors = [
+    "Jeppe Klitgaard <jk782@cam.ac.uk>",
+]
+license = "MIT"
+homepage = "https://github.com/JeppeKlitgaard/DDMTools"
+repository = "https://github.com/JeppeKlitgaard/DDMTools"
+keywords = [
+    "ddm",
+    "microscopy",
+    "physics",
+    "fluids",
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Typing :: Typed",
+]
+
+[tool.poetry.dependencies]
+python = ">=3.9,<3.10"
+Pillow = "^8.4.0"
+pandas = "^1.3.4"
+matplotlib = "^3.4.3"
+uncertainties = "^3.1.6"
+tqdm = "^4.62.3"
+statsmodels = "^0.13.1"
+numpy = "1.20.3"
+numba = "^0.54.1"
+joblib = "^1.1.0"
+lmfit = "^1.0.3"
+numdifftools = "^0.9.40"
+
+[tool.poetry.dev-dependencies]
+isort = "^5.10.1"
+ipykernel = "^6.5.0"
+yappi = "^1.3.3"
+poethepoet = "^0.11.0"
+mypy = "^0.910"
+flake8 = "^4.0.1"
+
+# Black
+[tool.black]
+line-length = 100
+target-version = ["py39"]
+
+# Isort
+[tool.isort]
+profile = "black"
+skip_gitignore = true
+line_length = 100
+
+
+known_datascience = [
+    "numpy",
+    "pandas",
+    "scipy",
+]
+
+known_first_party = [
+    "ddmtools",
+]
+
+sections = [
+    "FUTURE",
+    "STDLIB",
+    "DATASCIENCE",
+    "ML",
+    "THIRDPARTY",
+    "FIRSTPARTY",
+    "LOCALFOLDER",
+]
+
+# Tasks
+[tool.poe.tasks]
+flake8 = "flake8 ./ddmtools"
+mypy = "mypy ./ddmtools"
+black_check = "black --check ."
+isort_check = "isort --check-only ."
+
+black = "black ."
+isort = "isort ."
+
+lint = [
+    "flake8",
+    "black_check",
+    "isort_check",
+    "mypy",
+]
+
+fix = [
+    "black",
+    "isort",
+]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

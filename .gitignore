@@ -1,0 +1,14 @@
+# Virtual environments
+.venv
+venv
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Data
+*.pgm
+data/
+
+# VSCode
+.vscode/
