@@ -13,6 +13,7 @@ import scipy.fft
 import scipy.optimize
 
 import lmfit
+import matplotlib.colors
 import statsmodels.api as sm
 from joblib import Parallel, delayed
 from lmfit.minimizer import MinimizerResult
@@ -50,6 +51,9 @@ class MinimizingResult:
     micrometre_per_pixel: float
     temperature: float
     viscosity: float
+
+    def tau_to_time(self, tau: int) -> float:
+        return tau / self.framerate
 
     def plot_image_structure_function_params(self) -> Figure:
         fig, ax1 = plt.subplots()
@@ -214,7 +218,7 @@ class FitResult(MinimizingResult):
 
     def plot_diffusion_coeff_fit(self) -> Figure:
         fig = plt.figure()
-        fig.set_size_inches(20, 10)
+        fig.set_size_inches(14, 7)
 
         for i in range(self.dispersity_order):
             tau_cs = self.param_df[f"tau_c_{i}"]
@@ -227,7 +231,7 @@ class FitResult(MinimizingResult):
 
             fitted_y = mode_fit.a * log_qs + mode_fit.b
 
-            plt.plot(qs, tau_cs, "o", label=r"$tau_c^{(%s)}$" % i)
+            plt.plot(qs, tau_cs, "o", label=r"$τ_c^{(%s)}$" % i)
             plt.plot(qs, np.exp(fitted_y), label=f"lin. fit of ({i})")
             plt.axvspan(qs[mode_fit.tau_range[0]], qs[mode_fit.tau_range[1]], color=(0.9, 0.9, 0.9))
 
@@ -236,6 +240,8 @@ class FitResult(MinimizingResult):
 
             plt.xscale("log")
             plt.yscale("log")
+
+        plt.title("Diffusion Coefficient, $D$, fit")
 
         plt.legend()
 
@@ -259,7 +265,11 @@ class FitResult(MinimizingResult):
         )
 
         fig = plt.figure()
-        fig.set_size_inches(20, 8)
+        fig.set_dpi(300)
+        fig.set_size_inches(14, 6)
+
+        norm1 = matplotlib.colors.LogNorm()
+        norm1.autoscale(times)
 
         # Plot ISF for various $q$ as a function of time deltas
         ax1 = plt.subplot(1, 2, 1)
@@ -268,14 +278,24 @@ class FitResult(MinimizingResult):
                 qs,
                 iqtaus[i] / 512 ** 2,
                 "o",
-                color=plt.cm.autumn(i / float(len(times))),
+                color=plt.cm.autumn_r(norm1(times[i])),
             )
             plt.plot(qs, fitted_iqtaus[:, i] / 512 ** 2, "-k")
+
+        cbar1 = plt.colorbar(
+            plt.cm.ScalarMappable(norm=norm1, cmap=plt.cm.autumn_r),
+            fraction=0.05,
+            pad=0.03,
+            aspect=50,
+        )
+
+        cbar1.ax.get_yaxis().labelpad = 5
+        cbar1.ax.set_ylabel("$t \ [s]$", rotation=90)
 
         plt.xscale("log")
         plt.yscale("log")
         plt.ylabel(r"$\mathcal{I}$")
-        plt.xlabel(r"$q\,(\mu m^{-1})$")
+        plt.xlabel(r"$|\vec{q}| \ [μm^{-1}]$")
 
         ax2 = plt.subplot(1, 2, 2, sharey=ax1)
 
@@ -284,21 +304,36 @@ class FitResult(MinimizingResult):
             num_delta_t_lines=num_delta_t_lines,
         )
 
+        norm2 = matplotlib.colors.LogNorm()
+        norm2.autoscale(qs)
+
         for i, iq in enumerate(delta_t_qs):
             plt.plot(
                 times,
                 iqtaus[:, iq] / 512 ** 2,
                 "o",
-                color=plt.cm.autumn(i / 10.0),
+                color=plt.cm.autumn_r(norm2(qs[i])),
             )
             plt.plot(times, fitted_iqtaus[iq] / 512 ** 2, "-k")
 
+        cbar2 = plt.colorbar(
+            plt.cm.ScalarMappable(norm=norm2, cmap=plt.cm.autumn_r),
+            fraction=0.05,
+            pad=0.03,
+            aspect=50,
+        )
+        cbar2.ax.get_yaxis().labelpad = 5
+        cbar2.ax.set_ylabel(r"$|\vec{q}| \ [μm^{-1}]$", rotation=90)
+
         plt.xscale("log")
-        plt.xlabel(r"$\Delta t\,(s)$")
+        plt.xlabel(r"$t \ [s]$")
         plt.setp(ax2.get_yticklabels(), visible=False)
 
         fig.suptitle(
-            f"Image Structure Functions for various choices of $q$ as a function of $Δt$. Dispersity mode: {dispersity_mode}"
+            r"Image Structure Functions as a function of the scattered wavevector $|\vec{q}|$"
+            + "\n"
+            + "and time difference $t$.\n"
+            + f"Dispersity mode: {dispersity_mode}"
         )
 
         return fig
@@ -312,13 +347,16 @@ class FitResult(MinimizingResult):
         # TODO: these need to be patched to be intermediate scattering functions
         # when dispersity_mode != 0
 
-        tau_range = self.dispersity_mode_fits[dispersity_mode].tau_range
+        dispersity_fit = self.dispersity_mode_fits[dispersity_mode]
 
         as_ = self.param_df["A"]
         bs = self.param_df["B"]
         qs = self.param_df["q"]
         times = self.times
         iqtaus = self.iqtaus
+
+        tau_range = dispersity_fit.tau_range
+        qs_range = [qs[tau] for tau in tau_range]
 
         # Calculate fitted and experimental intermediate scattering functions
         fitted_iqtaus = array_image_structure_function_wrapper(
@@ -336,11 +374,16 @@ class FitResult(MinimizingResult):
 
         experiment_fs = 1 - (fitted_iqtaus - np.array(bs)[:, None]) / np.array(as_)[:, None]
 
-        fig = plt.figure(figsize=(20, 8))
-
         delta_t_qs = self._calculate_delta_t_qs(
             tau_range=tau_range, num_delta_t_lines=num_delta_t_lines
         )
+
+        fig = plt.figure()
+        fig.set_dpi(300)
+        fig.set_size_inches(14, 6)
+
+        norm = matplotlib.colors.Normalize()
+        norm.autoscale(qs_range)
 
         ax1 = plt.subplot(1, 2, 1)
         for i, iq in enumerate(delta_t_qs):
@@ -348,7 +391,7 @@ class FitResult(MinimizingResult):
                 times,
                 experiment_fs[iq, :],
                 "o",
-                color=plt.cm.autumn(i / 10.0),
+                color=plt.cm.autumn_r(norm(qs[iq])),
             )
             plt.plot(
                 times,
@@ -356,9 +399,19 @@ class FitResult(MinimizingResult):
                 "-k",
             )
 
+        cbar1 = plt.colorbar(
+            plt.cm.ScalarMappable(norm=norm, cmap=plt.cm.autumn_r),
+            fraction=0.05,
+            pad=0.03,
+            aspect=50,
+        )
+
+        cbar1.ax.get_yaxis().labelpad = 5
+        cbar1.ax.set_ylabel(r"$|\vec{q}| \ [μm ^{-1}]$", rotation=90)
+
         plt.xscale("log")
-        plt.ylabel(r"$f(q,\Delta t)$")
-        plt.xlabel(r"$\Delta t\,(s)$")
+        plt.ylabel(r"$f(\vec{q},t)$")
+        plt.xlabel(r"$t \ [s]$")
 
         ax2 = plt.subplot(1, 2, 2, sharey=ax1)
         for i, iq in enumerate(delta_t_qs):
@@ -366,13 +419,36 @@ class FitResult(MinimizingResult):
                 qs[iq] ** 2 * times,
                 experiment_fs[iq, :],
                 "o",
-                color=plt.cm.autumn(i / 10.0),
+                color=plt.cm.autumn_r(norm(qs[iq])),
             )
 
+        plt.plot(
+            qs[dispersity_fit.idx_best_rsq] ** 2 * times,
+            fitted_fs[dispersity_fit.idx_best_rsq, :],
+            "-k",
+        )
+
+        cbar1 = plt.colorbar(
+            plt.cm.ScalarMappable(norm=norm, cmap=plt.cm.autumn_r),
+            fraction=0.05,
+            pad=0.03,
+            aspect=50,
+        )
+
+        cbar1.ax.get_yaxis().labelpad = 5
+        cbar1.ax.set_ylabel(r"$|\vec{q}| \ [μm ^{-1}]$", rotation=90)
+
         plt.xscale("log")
-        plt.xlabel(r"$q^2\Delta t\,(s/\mu m^2)$")
+        plt.xlabel(r"$t |\vec{q}|^2 \ [s/μm^2]$")
         plt.setp(ax2.get_yticklabels(), visible=False)
         plt.ylim(-0.1, 1.1)
+
+        fig.suptitle(
+            "Intermediate Scattering as a function of the time difference $t$ "
+            + r"and $t|\vec{q}|^2$."
+            + "\n"
+            + f"Dispersity mode: {dispersity_mode}"
+        )
 
         return fig
 
@@ -604,10 +680,44 @@ class DDM:
 
     def plot_radial_average(self, average_array: np.ndarray) -> Figure:
         fig = plt.Figure()
+        fig.set_dpi(150)
+
+        plt.plot(average_array)
+
+        plt.ylabel("Intensity, arb. unit")
+        plt.xlabel("Radial Distance, px")
 
         plt.xscale("log")
         plt.yscale("log")
-        plt.plot(average_array)
+
+        plt.title("Radial Average")
+
+        return fig
+
+    def plot_image_structure_function(self, n_q: int) -> Figure:
+        self._require_attr("iqtaus")
+        self._require_attr("taus")
+
+        fig = plt.figure()
+        fig.set_dpi(300)
+        fig.set_size_inches(10, 6)
+
+        qs = self.iqtaus_to_qs(self.iqtaus)
+
+        times = self.taus_to_times(self.taus)
+        isfs = self.iqtaus[:, n_q]
+
+        plt.plot(times, isfs, "o")
+
+        plt.xscale("log")
+        plt.yscale("log")
+
+        plt.xlabel("Time [s]")
+        plt.ylabel("Image Structure Function [arb. unit]")
+
+        plt.title(
+            f"Time-Dependent Image Structure Function at $|q| = {qs[n_q]:.2f}\, " + "[μm^{-1}]$"
+        )
 
         return fig
 
@@ -738,6 +848,8 @@ class DDM:
         method_sequence: Optional[list[str]] = None,
         objective_method: Literal["loop", "array"] = "array",
         max_nfev: Optional[int] = None,
+        iter_N: int = 50,
+        show_progress: bool = True,
     ) -> MinimizingResult:
         # DOF = (n-1) + q(1+1+1+(n-1))
         # DOF = -1 + n + q(2+n)
@@ -821,6 +933,14 @@ class DDM:
         else:
             raise ValueError("Bad argument.")
 
+        # TQDM progress bar
+        nfev_total = max_nfev * len(method_sequence) if max_nfev is not None else None
+        pbar = tqdm(total=nfev_total, disable=not show_progress)
+
+        def iter_callback(params, iter, resid, *args, **kws):
+            if not iter % iter_N:
+                pbar.update(iter_N)
+
         for k, method in enumerate(method_sequence):
             print(f"Doing fit {k+1}/{len(method_sequence)} using method `{method}`...")
 
@@ -830,10 +950,13 @@ class DDM:
                 method=method,
                 nan_policy="propagate",
                 args=(iqtaus, times, dispersity_order),
+                iter_cb=iter_callback,
                 max_nfev=max_nfev,
             )
 
             fit_params = fit.params
+
+        pbar.close()
 
         df = self._minimizer_result_to_df(fit)
         df["q"] = self.iqtaus_to_qs(iqtaus)

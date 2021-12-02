@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ddmtools"
-version = "0.1.0"
+version = "0.1.1"
 description = "A Python library for doing differential dynamic microscopy on polydisperse samples"
 authors = [
     "Jeppe Klitgaard <jk782@cam.ac.uk>",
@@ -81,7 +81,6 @@ sections = [
     "FUTURE",
     "STDLIB",
     "DATASCIENCE",
-    "ML",
     "THIRDPARTY",
     "FIRSTPARTY",
     "LOCALFOLDER",
