@@ -753,7 +753,7 @@ class DDM:
         *,
         max_couples: int = 50,
         progress_bar: bool = True,
-        workers: int - 1,
+        workers: int = -1,
     ) -> np.ndarray:
         iqtaus = ddm(
             self.stack, taus, max_couples=max_couples, progress_bar=progress_bar, workers=workers
