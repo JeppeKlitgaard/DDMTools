@@ -699,7 +699,7 @@ class DDM:
         self._require_attr("taus")
 
         fig = plt.figure()
-        fig.set_dpi(300)
+        fig.set_dpi(150)
         fig.set_size_inches(10, 6)
 
         qs = self.iqtaus_to_qs(self.iqtaus)
@@ -848,7 +848,6 @@ class DDM:
         method_sequence: Optional[list[str]] = None,
         objective_method: Literal["loop", "array"] = "array",
         max_nfev: Optional[int] = None,
-        iter_N: int = 50,
         show_progress: bool = True,
     ) -> MinimizingResult:
         # DOF = (n-1) + q(1+1+1+(n-1))
@@ -935,11 +934,16 @@ class DDM:
 
         # TQDM progress bar
         nfev_total = max_nfev * len(method_sequence) if max_nfev is not None else None
-        pbar = tqdm(total=nfev_total, disable=not show_progress)
+        pbar = tqdm(
+            total=nfev_total,
+            disable=not show_progress,
+            mininterval=0.5,
+            miniters=10,
+            smoothing=0.05,
+        )
 
         def iter_callback(params, iter, resid, *args, **kws):
-            if not iter % iter_N:
-                pbar.update(iter_N)
+            pbar.update()
 
         for k, method in enumerate(method_sequence):
             print(f"Doing fit {k+1}/{len(method_sequence)} using method `{method}`...")
