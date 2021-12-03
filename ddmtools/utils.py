@@ -1,4 +1,9 @@
+from typing import Optional
+
 import numpy as np
+
+from joblib import Parallel
+from tqdm.auto import tqdm
 
 
 def log_spaced(max_num: int, points_per_decate: int = 15) -> np.ndarray:
@@ -31,3 +36,22 @@ def get_centre_matrix(big_matrix: np.ndarray, small_matrix_shape: tuple[int, int
     small_matrix = big_matrix[aa:ab, ba:bb]
 
     return small_matrix
+
+
+# https://stackoverflow.com/a/61900501/5036246
+class ProgressParallel(Parallel):
+    def __init__(self, use_tqdm: bool = True, total: Optional[int] = None, *args, **kwargs):
+        self._use_tqdm = use_tqdm
+        self._total = total
+        super().__init__(*args, **kwargs)
+
+    def __call__(self, *args, **kwargs):
+        with tqdm(disable=not self._use_tqdm, total=self._total) as self._pbar:
+            return Parallel.__call__(self, *args, **kwargs)
+
+    def print_progress(self):
+        if self._total is None:
+            self._pbar.total = self.n_dispatched_tasks
+
+        self._pbar.n = self.n_completed_tasks
+        self._pbar.refresh()

@@ -25,14 +25,14 @@ from statsmodels.regression.rolling import RollingOLS
 from tqdm.auto import tqdm
 
 from ddmtools.eq_utils import diameter_calculator
-from ddmtools.image.frame import Framestack
+from ddmtools.image.frame import Frame, Framestack
 from ddmtools.isf import (
     array_image_structure_function_wrapper,
     array_intermediate_scattering_function,
     array_objective,
     wrap_parameters,
 )
-from ddmtools.utils import log_spaced
+from ddmtools.utils import ProgressParallel, log_spaced
 
 CPU_COUNT = os.cpu_count()
 
@@ -475,22 +475,36 @@ class FitResult(MinimizingResult):
         return particle_diameters
 
 
-# @jit(parallel=True)
+def _ddm_do_step(
+    stack: Framestack, n_tau: int, max_couples: int, radial_average: RadialAverager
+) -> np.ndarray:
+    time_averaged = time_average(stack, n_tau, max_couples=max_couples)
+    radial_averaged = radial_average(time_averaged)
+
+    return radial_averaged
+
+
 def ddm(
     stack: Framestack,
     n_taus: Sequence[int],
     max_couples: int = 100,
     progress_bar: bool = True,
+    workers: int = -1,
 ):
     radial_average = RadialAverager(stack.shape)
 
-    iqtaus = np.zeros([len(n_taus), len(radial_average.pixel_density)])
+    # Parallise using joblib
+    with ProgressParallel(
+        n_jobs=workers,
+        prefer="threads",
+        use_tqdm=progress_bar,
+        total=len(n_taus),
+    ) as parallel:
+        out = parallel(
+            delayed(_ddm_do_step)(stack, n_tau, max_couples, radial_average) for n_tau in n_taus
+        )
 
-    for i, n_tau in tqdm(enumerate(n_taus), total=len(n_taus), disable=not progress_bar):
-        time_averaged = time_average(stack, n_tau, max_couples=max_couples)
-        iqtaus[i] = radial_average(time_averaged)
-
-    return iqtaus
+    return np.array(out)
 
 
 @njit(parallel=True)
@@ -513,7 +527,6 @@ def differential_spectrum(frame1: np.ndarray, frame2: np.ndarray, workers: int =
     return squared
 
 
-# @jit(parallel=True, forceobj=True)
 def time_average(
     stack: Framestack, n_tau: int, max_couples: int = 300, workers: int = 0
 ) -> np.ndarray:
@@ -526,18 +539,12 @@ def time_average(
     # Precompute all initial times
     initial_times = np.arange(0, len(stack) - n_tau, increment)
 
-    # This will be parallized by Numba
-    sums = Parallel(n_jobs=workers)(
+    # Parallise using joblib
+    sums = Parallel(n_jobs=workers, prefer="threads")(
         delayed(differential_spectrum)(stack[t], stack[t + n_tau]) for t in initial_times
     )
 
     avg_fft = np.sum(sums, axis=0)
-
-    # avg_fft = np.zeros(stack.shape[0])
-
-    # for i in prange(len(initial_times)):
-    #     t = initial_times[i]
-    #     avg_fft += differential_spectrum(stack[t], stack[t + n_tau])
 
     return avg_fft / len(initial_times)
 
@@ -741,9 +748,16 @@ class DDM:
 
     # TODO: Change to run_ddm
     def analyse(
-        self, taus: Sequence[int], *, max_couples: int = 50, progress_bar: bool = True
+        self,
+        taus: Sequence[int],
+        *,
+        max_couples: int = 50,
+        progress_bar: bool = True,
+        workers: int - 1,
     ) -> np.ndarray:
-        iqtaus = ddm(self.stack, taus, max_couples=max_couples, progress_bar=progress_bar)
+        iqtaus = ddm(
+            self.stack, taus, max_couples=max_couples, progress_bar=progress_bar, workers=workers
+        )
 
         self.taus = taus
         self.iqtaus = iqtaus
