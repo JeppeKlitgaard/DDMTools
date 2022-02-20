@@ -4,7 +4,6 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from time import time
 from typing import Any, Literal, Optional, Sequence
 
 import numpy as np
@@ -12,31 +11,36 @@ import pandas as pd
 import scipy.fft
 import scipy.optimize
 
+import colorcet as cc
 import lmfit
 import matplotlib.colors
 import statsmodels.api as sm
+import uncertainties.unumpy as unp
 from joblib import Parallel, delayed
 from lmfit.minimizer import MinimizerResult
 from lmfit.parameter import Parameters
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
-from numba import jit, njit, objmode, prange
-from statsmodels.regression.rolling import RollingOLS
+from numba import njit, objmode
+from statsmodels.regression.linear_model import RegressionResults
+from statsmodels.regression.rolling import RollingRegressionResults, RollingWLS
 from tqdm.auto import tqdm
+from uncertainties import ufloat, umath
+from uncertainties.core import AffineScalarFunc as UFloat
 
 from ddmtools.eq_utils import diameter_calculator
-from ddmtools.image.frame import Frame, Framestack
+from ddmtools.image.frame import Framestack
 from ddmtools.isf import (
     array_image_structure_function_wrapper,
     array_intermediate_scattering_function,
     array_objective,
     wrap_parameters,
 )
-from ddmtools.utils import ProgressParallel, log_spaced
+from ddmtools.utils import ProgressParallel, log_spaced, pd_nom, pd_sd
 
-CPU_COUNT = os.cpu_count()
+CPU_COUNT = os.cpu_count() or 1
 
-# Most of this code is lifted shamelessly from https://github.com/MathieuLeocmach/DDM
+# Some of this code is lifted shamelessly from https://github.com/MathieuLeocmach/DDM
 
 
 @dataclass
@@ -56,28 +60,61 @@ class MinimizingResult:
         return tau / self.framerate
 
     def plot_image_structure_function_params(self) -> Figure:
-        fig, ax1 = plt.subplots()
-        fig.set_size_inches(10, 10)
+        ERROR_ALPHA = 0.5
 
-        ax1.plot(self.param_df["q"], self.param_df["A"], "o", label="A", color=plt.cm.winter(0.0))
-        ax1.plot(self.param_df["q"], self.param_df["B"], "o", label="B", color=plt.cm.winter(1.0))
+        fig, ax1 = plt.subplots()
+        fig.set_size_inches(8, 8)
+        fig.set_dpi(120)
+
+        alpha_elements = []
+        markers, caps, bars = ax1.errorbar(
+            self.param_df["q"],
+            pd_nom(self.param_df["A"]),
+            pd_sd(self.param_df["A"]),
+            fmt="+",
+            label="A",
+            color=cc.cm.rainbow(0.0),
+            capsize=4,
+        )
+        alpha_elements += caps + bars
+
+        markers, caps, bars = ax1.errorbar(
+            self.param_df["q"],
+            pd_nom(self.param_df["B"]),
+            pd_sd(self.param_df["B"]),
+            fmt="+",
+            label="B",
+            color=cc.cm.rainbow(1.0),
+            capsize=4,
+        )
+        alpha_elements += caps + bars
+        [el.set_alpha(ERROR_ALPHA) for el in alpha_elements]
+
         ax1.set_yscale("log")
         ax1.set_ylabel(r"$A(q),\, B(q)$")
 
         ax2 = ax1.twinx()
+        ax2_ypoints = []
+        ax2_alpha_elements = []
         for i in range(self.dispersity_order):
-            ax2.plot(
+            markers, caps, bars = ax2.errorbar(
                 self.param_df["q"],
-                self.param_df[f"alpha_{i}"],
-                "+",
+                pd_nom(self.param_df[f"alpha_{i}"]),
+                pd_sd(self.param_df[f"alpha_{i}"]),
+                fmt="+",
                 label=fr"$\alpha_{i}$",
                 color=plt.cm.autumn(i / self.dispersity_order),
+                capsize=4,
             )
+            ax2_alpha_elements += caps + bars
+            ax2_ypoints.extend(pd_nom(self.param_df[f"alpha_{i}"]).values)
+
+        ax2.set_ylim(min(ax2_ypoints) * 0.9, max(ax2_ypoints) * 1.1)
+        [el.set_alpha(0.1) for el in ax2_alpha_elements]
 
         ax2_ylabel = r",\, ".join(fr"\alpha_{i}(q)" for i in range(self.dispersity_order))
         ax2.set_ylabel(f"${ax2_ylabel}$")
 
-        [ax.set_xlabel(r"$q\,(\mu m^{-1})$") for ax in [ax1, ax2]]
         plt.xscale("log")
 
         fig.legend()
@@ -91,7 +128,7 @@ class MinimizingResult:
         fit_fraction_step: float = 0.02,
         minimal_r_squared: float = 0.98,
         reset_interval: int = 3,
-    ):
+    ) -> FitResult:
         log_qs = np.log(self.param_df["q"])
 
         dispersity_mode_fits: list[DispersityModeFitResult] = []
@@ -99,13 +136,14 @@ class MinimizingResult:
         for i in range(self.dispersity_order):
             tau_cs = self.param_df[f"tau_c_{i}"]
 
-            log_tau_cs = np.log(tau_cs)
+            log_tau_cs = unp.log(tau_cs)
 
             # Loop over decreasing fit fractions until we give up or find a good match
             past_attempted_fits: list[dict[str, Any]] = []
             while True:
                 logx = log_qs.copy()
                 logy = log_tau_cs.copy()
+                weights = 1 / (unp.std_devs(logy) ** 2)
 
                 X = logx
                 X = sm.add_constant(X)
@@ -113,10 +151,14 @@ class MinimizingResult:
                 window = np.ceil(len(log_qs) * fit_fraction).astype(int)
 
                 with np.errstate(divide="ignore", invalid="ignore"):
-                    rolling_ols = RollingOLS(logy, X, window)
-                    result = rolling_ols.fit(reset=reset_interval)
+                    rolling_wls = RollingWLS(
+                        unp.nominal_values(logy), X, window, weights=weights, missing="drop"
+                    )
+                    rolling_results = rolling_wls.fit(reset=reset_interval)
 
-                signed_rsquared = result.rsquared * -np.sign(result.params.iloc[:, 1])
+                signed_rsquared = rolling_results.rsquared * -np.sign(
+                    rolling_results.params.iloc[:, 1]
+                )
 
                 best_rsq = np.nanmax(signed_rsquared)
                 idx_best_rsq = np.nanargmax(signed_rsquared)
@@ -132,7 +174,7 @@ class MinimizingResult:
 
                     fit_fraction = best_attempt["fit_fraction"]
                     window = best_attempt["window"]
-                    result = best_attempt["result"]
+                    rolling_results = best_attempt["result"]
                     best_rsq = best_attempt["best_rsq"]
 
                     break
@@ -142,27 +184,46 @@ class MinimizingResult:
                     {
                         "fit_fraction": fit_fraction,
                         "window": window,
-                        "result": result,
+                        "result": rolling_results,
                         "best_rsq": best_rsq,
                     }
                 )
 
                 fit_fraction = max(fit_fraction - fit_fraction_step, fit_fraction_minimum)
 
-            b, a = result.params.iloc[idx_best_rsq]
-
-            b_std_dev, a_std_dev = result.bse.iloc[idx_best_rsq]
-
-            iqmin = idx_best_rsq - window
+            iqmin = idx_best_rsq - window + 1
             iqmax = idx_best_rsq
 
-            diff_coeff = np.exp(-b)
+            # Refit using regular WLS model to get RegressionResult instance
+            # in addition to RollingRegressionResult
+            # We use this to easily get predictions later
+            single_endog = unp.nominal_values(logy[iqmin:iqmax])
+            single_x = logx[iqmin:iqmax]
+            single_X = sm.add_constant(single_x)
+            single_weights = 1 / (unp.std_devs(logy[iqmin:iqmax]) ** 2)
+            single_wls = sm.WLS(
+                single_endog,
+                single_X,
+                weights=single_weights,
+                missing="drop",
+            )
+            single_results = single_wls.fit()
+
+            b, a = single_results.params
+            b_std_dev, a_std_dev = single_results.bse
+
+            b_uf = ufloat(b, b_std_dev)
+            a_uf = ufloat(a, a_std_dev)
+
+            diff_coeff = umath.exp(-b_uf)
 
             dispersity_mode_fit = DispersityModeFitResult(
-                b=b,
-                b_std_dev=b_std_dev,
-                a=a,
-                a_std_dev=a_std_dev,
+                rolling_model=rolling_wls,
+                rolling_results=rolling_results,
+                model=single_wls,
+                results=single_results,
+                b=b_uf,
+                a=a_uf,
                 fit_fraction=fit_fraction,
                 window=window,
                 r_squared=best_rsq,
@@ -192,14 +253,16 @@ class MinimizingResult:
 
 @dataclass
 class DispersityModeFitResult:
-    b: float
-    b_std_dev: float
-    a: float
-    a_std_dev: float
+    rolling_model: RollingWLS
+    rolling_results: RollingRegressionResults
+    model: sm.WLS
+    results: RegressionResults
+    b: UFloat
+    a: UFloat
     fit_fraction: float
     window: int
     r_squared: float
-    diffusion_coefficient: float
+    diffusion_coefficient: UFloat
     idx_best_rsq: int
     tau_range: tuple[int, int]
 
@@ -219,27 +282,60 @@ class FitResult(MinimizingResult):
     def plot_diffusion_coeff_fit(self) -> Figure:
         fig = plt.figure()
         fig.set_size_inches(14, 7)
+        fig.set_dpi(100)
 
+        qs = self.param_df["q"]
+
+        colors = list(cc.cm.rainbow(np.linspace(0.0, 1.0, self.dispersity_order)))
         for i in range(self.dispersity_order):
+            mode_fit = self.dispersity_mode_fits[i]
+            color = colors[i]
+
             tau_cs = self.param_df[f"tau_c_{i}"]
 
-            qs = self.param_df["q"]
+            # Plot taus and uncertainties
+            markers, caps, bars = plt.errorbar(
+                qs,
+                pd_nom(tau_cs),
+                pd_sd(tau_cs),
+                color=color,
+                fmt="+",
+                label=r"$τ_c^{(%s)}$" % i,
+                capsize=4,
+            )
+            [e.set_alpha(0.5) for e in caps + bars]
 
-            log_qs = np.log(qs)
+            # Plot fit
+            fit_qs = np.logspace(np.log10(min(qs)), np.log10(max(qs)), 1000)
+            fit_log_qs = np.log(fit_qs)
+            fit_X = sm.add_constant(fit_log_qs)
+            prediction = mode_fit.results.get_prediction(fit_X)
+            prediction_summary = prediction.summary_frame(alpha=1.0 - 0.6827)  # 1 sigma
 
-            mode_fit = self.dispersity_mode_fits[i]
+            mean = np.exp(prediction_summary["mean"].values)
+            lower = np.exp(prediction_summary["mean_ci_lower"].values)
+            upper = np.exp(prediction_summary["mean_ci_upper"].values)
 
-            fitted_y = mode_fit.a * log_qs + mode_fit.b
+            plt.plot(fit_qs, mean, "-", color=color)
+            plt.plot(fit_qs, lower, "--", alpha=0.5, color=color, label=r"$τ_c^{(%s)}±σ$" % i)
+            plt.plot(fit_qs, upper, "--", alpha=0.5, color=color)
+            plt.fill_between(fit_qs, lower, upper, alpha=0.1, color=color)
 
-            plt.plot(qs, tau_cs, "o", label=r"$τ_c^{(%s)}$" % i)
-            plt.plot(qs, np.exp(fitted_y), label=f"lin. fit of ({i})")
-            plt.axvspan(qs[mode_fit.tau_range[0]], qs[mode_fit.tau_range[1]], color=(0.9, 0.9, 0.9))
+        plt.axvspan(
+            qs[self.dispersity_mode_fits[1].tau_range[0]],
+            qs[self.dispersity_mode_fits[1].tau_range[1]],
+            color="black",
+            alpha=0.1,
+        )
 
-            plt.ylabel(r"$\tau_c^{(i)}(q)$")
-            plt.xlabel(r"$q\,(\mu m^{-1})$")
+        plt.xscale("log")
+        plt.yscale("log")
 
-            plt.xscale("log")
-            plt.yscale("log")
+        plt.ylabel(r"$\tau_c^{(i)}(q)$")
+        plt.xlabel(r"$q\,(\mu m^{-1})$")
+
+        plt.xlim(qs[0] ** 0.9)
+        plt.ylim(top=max(pd_nom(tau_cs)) ** 1.1)
 
         plt.title("Diffusion Coefficient, $D$, fit")
 
@@ -290,7 +386,7 @@ class FitResult(MinimizingResult):
         )
 
         cbar1.ax.get_yaxis().labelpad = 5
-        cbar1.ax.set_ylabel("$t \ [s]$", rotation=90)
+        cbar1.ax.set_ylabel(r"$t \ [s]$", rotation=90)
 
         plt.xscale("log")
         plt.yscale("log")
@@ -349,8 +445,8 @@ class FitResult(MinimizingResult):
 
         dispersity_fit = self.dispersity_mode_fits[dispersity_mode]
 
-        as_ = self.param_df["A"]
-        bs = self.param_df["B"]
+        as_ = pd_nom(self.param_df["A"])
+        bs = pd_nom(self.param_df["B"])
         qs = self.param_df["q"]
         times = self.times
         iqtaus = self.iqtaus
@@ -453,7 +549,7 @@ class FitResult(MinimizingResult):
         return fig
 
     def get_diffusion_coefficients(self) -> list[float]:
-        diff_coeffs: list[float] = []
+        diff_coeffs: list[UFloat] = []
         for mode in self.dispersity_mode_fits:
             diff_coeffs.append(mode.diffusion_coefficient)
 
@@ -723,7 +819,7 @@ class DDM:
         plt.ylabel("Image Structure Function [arb. unit]")
 
         plt.title(
-            f"Time-Dependent Image Structure Function at $|q| = {qs[n_q]:.2f}\, " + "[μm^{-1}]$"
+            f"Time-Dependent Image Structure Function at $|q| = {qs[n_q]:.2f}\\, " + "[μm^{-1}]$"
         )
 
         return fig
@@ -742,7 +838,7 @@ class DDM:
             iqtaus = self.iqtaus
 
         nqs = iqtaus.shape[-1]
-        qs = 2 * np.pi / (2 * nqs * self.micrometre_per_pixel) * np.arange(nqs)
+        qs = 2 * np.pi / (2 * nqs * self.micrometre_per_pixel) * np.arange(1, nqs + 1)
 
         return qs
 
@@ -825,14 +921,18 @@ class DDM:
     def _minimizer_result_to_df(minimizer_result: MinimizerResult) -> pd.DataFrame:
         pattern = re.compile(r"^([a-zA-Z_]+)_([0-9]+)?(.*)$")
 
-        data_dict = {}
-        beta_dict = {}
+        if not minimizer_result.errorbars:
+            raise ValueError("Was unable to estimate errors. Likely not enough data.")
+
+        data_dict: dict[str, ufloat] = {}
+        beta_dict: dict[str, ufloat] = {}
         for param in minimizer_result.params:
             if param.startswith("beta_"):
                 beta_dict[param] = minimizer_result.params[param]
                 continue
 
             match = pattern.fullmatch(param)
+            assert match is not None
 
             idx = int(match.group(2))
             new_name = match.group(1) + match.group(3)
@@ -841,7 +941,10 @@ class DDM:
                 data_dict[new_name] = []
 
             assert idx == len(data_dict[new_name])
-            data_dict[new_name].append(minimizer_result.params[match.group(0)].value)
+
+            resolved_param = minimizer_result.params[match.group(0)]
+            param_uf = ufloat(resolved_param.value, resolved_param.stderr)
+            data_dict[new_name].append(param_uf)
 
         df = pd.DataFrame.from_dict(data_dict)
 
@@ -850,7 +953,9 @@ class DDM:
             if i == 0:
                 continue
 
-            df[f"tau_c_{i}"] = df["tau_c_0"] / beta
+            beta_uf = ufloat(beta.value, beta.stderr)
+
+            df[f"tau_c_{i}"] = df["tau_c_0"] / beta_uf
 
         return df
 
@@ -1021,10 +1126,8 @@ class DDM:
         tau_c = parameters[2]
 
         f = np.exp(-taus / tau_c)
-        # print(f)
 
         I = A * (1 - f) + B
-        # print(I)
 
         return np.log(I)
 

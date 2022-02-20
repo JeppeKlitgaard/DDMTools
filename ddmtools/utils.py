@@ -1,6 +1,7 @@
 from typing import Optional
 
 import numpy as np
+import pandas as pd
 
 from joblib import Parallel
 from tqdm.auto import tqdm
@@ -49,9 +50,18 @@ class ProgressParallel(Parallel):
         with tqdm(disable=not self._use_tqdm, total=self._total) as self._pbar:
             return Parallel.__call__(self, *args, **kwargs)
 
-    def print_progress(self):
+    def print_progress(self) -> None:
         if self._total is None:
             self._pbar.total = self.n_dispatched_tasks
 
         self._pbar.n = self.n_completed_tasks
         self._pbar.refresh()
+
+
+# Extract nominal and stddevs from a pandas series
+def pd_nom(series: pd.Series) -> pd.Series:
+    return series.apply(lambda x: x.nominal_value)
+
+
+def pd_sd(series: pd.Series) -> pd.Series:
+    return series.apply(lambda x: x.std_dev)

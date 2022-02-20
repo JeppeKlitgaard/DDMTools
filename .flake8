@@ -12,3 +12,4 @@ ignore =
     E741,  # Ambiguous name
     E203,  # Whitebespace before ":"
     W503,  # Linebreak before binary operator
+    E266,  # Too many leading '#' for block comment

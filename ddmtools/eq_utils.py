@@ -2,7 +2,7 @@ from math import pi
 
 from scipy import constants
 
-k_B = constants.Boltzmann
+k_B: float = constants.Boltzmann
 
 
 def diffusion_coefficient_calculator(
