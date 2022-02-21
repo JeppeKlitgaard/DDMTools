@@ -18,7 +18,7 @@ def diameter_calculator(
     micrometre_per_pixel: float,
     framerate: float,
 ) -> float:
-    scaling_factor = (micrometre_per_pixel ** 2) * framerate
+    scaling_factor = (micrometre_per_pixel**2) * framerate
     diameter = (
         k_B * temperature / (3 * pi * viscosity * scaling_factor * diffusion_coefficient) * 1.0e12
     )

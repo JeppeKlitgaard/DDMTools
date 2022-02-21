@@ -5,7 +5,6 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Sequence
-from typing_extensions import Literal
 
 import numpy as np
 import pandas as pd
@@ -26,6 +25,7 @@ from numba import njit, objmode
 from statsmodels.regression.linear_model import RegressionResults
 from statsmodels.regression.rolling import RollingRegressionResults, RollingWLS
 from tqdm.auto import tqdm
+from typing_extensions import Literal
 from uncertainties import ufloat, umath
 from uncertainties.core import AffineScalarFunc as UFloat
 
@@ -103,7 +103,7 @@ class MinimizingResult:
                 pd_nom(self.param_df[f"alpha_{i}"]),
                 pd_sd(self.param_df[f"alpha_{i}"]),
                 fmt="+",
-                label=fr"$\alpha_{i}$",
+                label=rf"$\alpha_{i}$",
                 color=plt.cm.autumn(i / self.dispersity_order),
                 capsize=4,
             )
@@ -113,7 +113,7 @@ class MinimizingResult:
         ax2.set_ylim(min(ax2_ypoints) * 0.9, max(ax2_ypoints) * 1.1)
         [el.set_alpha(0.1) for el in ax2_alpha_elements]
 
-        ax2_ylabel = r",\, ".join(fr"\alpha_{i}(q)" for i in range(self.dispersity_order))
+        ax2_ylabel = r",\, ".join(rf"\alpha_{i}(q)" for i in range(self.dispersity_order))
         ax2.set_ylabel(f"${ax2_ylabel}$")
 
         plt.xscale("log")
@@ -373,11 +373,11 @@ class FitResult(MinimizingResult):
         for i in range(0, len(times), q_interval):
             plt.plot(
                 qs,
-                iqtaus[i] / 512 ** 2,
+                iqtaus[i] / 512**2,
                 "o",
                 color=plt.cm.autumn_r(norm1(times[i])),
             )
-            plt.plot(qs, fitted_iqtaus[:, i] / 512 ** 2, "-k")
+            plt.plot(qs, fitted_iqtaus[:, i] / 512**2, "-k")
 
         cbar1 = plt.colorbar(
             plt.cm.ScalarMappable(norm=norm1, cmap=plt.cm.autumn_r),
@@ -407,11 +407,11 @@ class FitResult(MinimizingResult):
         for i, iq in enumerate(delta_t_qs):
             plt.plot(
                 times,
-                iqtaus[:, iq] / 512 ** 2,
+                iqtaus[:, iq] / 512**2,
                 "o",
                 color=plt.cm.autumn_r(norm2(qs[i])),
             )
-            plt.plot(times, fitted_iqtaus[iq] / 512 ** 2, "-k")
+            plt.plot(times, fitted_iqtaus[iq] / 512**2, "-k")
 
         cbar2 = plt.colorbar(
             plt.cm.ScalarMappable(norm=norm2, cmap=plt.cm.autumn_r),
@@ -1010,7 +1010,7 @@ class DDM:
         # with first beta constrained to one
         for i in range(dispersity_order):
             # WLOG first tau_c_j_0 can be largest tau due to commutative property
-            fit_params.add(f"beta_{i}", value=0.5 ** i, min=0.0, max=1.0)
+            fit_params.add(f"beta_{i}", value=0.5**i, min=0.0, max=1.0)
 
         fit_params["beta_0"].expr = "1"
 

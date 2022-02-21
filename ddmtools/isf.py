@@ -1,6 +1,7 @@
 # from numba import njit, prange, jit
-import numpy as np
 from typing import Tuple
+
+import numpy as np
 
 from lmfit.parameter import Parameters
 

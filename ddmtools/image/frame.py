@@ -55,7 +55,7 @@ class Framestack:
             frame = self[self.current_frame_idx]
             self.current_frame_idx += 1
             return frame
-        except IndexError as e:
+        except IndexError:
             self.current_frame_idx = 0
             raise StopIteration
 
