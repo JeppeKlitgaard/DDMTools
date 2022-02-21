@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Union
+from typing import List, Optional, Union, cast
 
 import numpy as np
 
@@ -61,16 +61,20 @@ class Framestack:
 
     def __getitem__(self, idx: int) -> Frame:
         if self.frame_cache[idx] is None:
-            self.frame_cache[idx] = self._read_frame(self.frame_paths[idx])
+            frame = self._read_frame(self.frame_paths[idx])
+        else:
+            frame: np.ndarray = self.frame_cache[idx]
 
-        if self.crop_target is not None and self.frame_cache[idx].shape != self.crop_target:
-            self.frame_cache[idx] = get_centre_matrix(self.frame_cache[idx], self.crop_target)
+        if self.crop_target is not None and frame.shape != self.crop_target:
+            self.frame_cache[idx] = get_centre_matrix(frame, self.crop_target)
 
-        return self.frame_cache[idx]
+        return frame
 
     @property
     def shape(self) -> tuple[int, int]:
-        return self[0].shape
+        shape: tuple[int, int] = self[0].shape
+
+        return shape
 
     def delete_cache(self) -> None:
         self.frame_cache = [None] * len(self.frame_paths)
@@ -86,4 +90,4 @@ class Framestack:
         if not self.preloaded:
             self.preload()
 
-        return np.stack(self.frame_cache)
+        return np.stack(cast(List[Frame], self.frame_cache))
