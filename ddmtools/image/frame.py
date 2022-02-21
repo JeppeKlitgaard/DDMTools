@@ -39,8 +39,8 @@ class Framestack:
         self.preloaded = True
 
     @classmethod
-    def from_folder(cls: Framestack, folder: Path, glob_pattern: str = "*.pgm") -> Framestack:
-        paths = list(folder.glob(glob_pattern))
+    def from_folder(cls, folder: Path, glob_pattern: str = "*.pgm") -> Framestack:
+        paths = sorted(folder.glob(glob_pattern))
 
         return cls(paths)
 
