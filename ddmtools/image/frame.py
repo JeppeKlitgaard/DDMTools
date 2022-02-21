@@ -15,6 +15,7 @@ Frame = np.ndarray
 class Framestack:
     def __init__(self, frame_paths: list[Path]):
         self.frame_paths = frame_paths
+        self.current_frame_idx = 0
 
         self.frame_cache: list[Union[None, Frame]] = [None] * len(self.frame_paths)
 
@@ -45,6 +46,18 @@ class Framestack:
 
     def __len__(self) -> int:
         return len(self.frame_cache)
+
+    def __iter__(self) -> Framestack:
+        return self
+
+    def __next__(self) -> Frame:
+        try:
+            frame = self[self.current_frame_idx]
+            self.current_frame_idx += 1
+            return frame
+        except IndexError as e:
+            self.current_frame_idx = 0
+            raise StopIteration
 
     def __getitem__(self, idx: int) -> Frame:
         if self.frame_cache[idx] is None:
