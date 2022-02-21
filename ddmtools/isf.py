@@ -1,4 +1,6 @@
 # from numba import njit, prange, jit
+from typing import Tuple
+
 import numpy as np
 
 from lmfit.parameter import Parameters
@@ -10,7 +12,7 @@ def array_intermediate_scattering_function(
     alpha_array: np.ndarray,
     beta_array: np.ndarray,
     times: np.ndarray,
-):
+) -> np.ndarray:
     r"""
     This is a single $f_i(q, t) = α_i * \exp(-\frac{t}{{γ_i ⋅ τ_ci})
     """
@@ -37,7 +39,7 @@ def array_intermediate_scattering_function(
     #             x3[i, j, k] += alpha_array[j, i] * x2[i, j, k]
 
     # sum over i's
-    F = np.sum(x3, 0)
+    F: np.ndarray = np.sum(x3, 0)
 
     return F
 
@@ -50,7 +52,7 @@ def array_image_structure_function(
     alpha_array: np.ndarray,
     beta_array: np.ndarray,
     times: np.ndarray,
-):
+) -> np.ndarray:
     F = array_intermediate_scattering_function(tau_c_0_array, alpha_array, beta_array, times)
 
     # I = A * (1 - F) + B
@@ -67,7 +69,7 @@ def array_image_structure_function(
     #         y2[j, k] = a_array[j] * y1[j, k]
 
     # I = A * (1 - F) + B
-    I = y2 + b_array.reshape(-1, 1)
+    I: np.ndarray = y2 + b_array.reshape(-1, 1)
 
     return I
 
@@ -75,7 +77,7 @@ def array_image_structure_function(
 # @njit(fastmath=True)
 def wrap_parameters(
     params_flat_arr: np.ndarray, nqs: int, dispersity_order: int
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     idx = 0
 
     size = dispersity_order
@@ -111,7 +113,7 @@ def wrap_parameters(
 # @jit(forceobj=True, parallel=True, fastmath=True)
 def array_image_structure_function_wrapper(
     params: Parameters, iqtaus: np.ndarray, times: np.ndarray, dispersity_order: int
-):
+) -> np.ndarray:
     params_flat_arr = np.array(list(params.valuesdict().values()))
 
     nqs = iqtaus.shape[-1]
@@ -134,5 +136,6 @@ def array_objective(
     log_experiment = np.log(iqtaus.T)
 
     residuals = log_experiment - log_guess
+    raveled_residuals: np.ndarray = residuals.ravel()
 
-    return residuals.ravel()
+    return raveled_residuals
