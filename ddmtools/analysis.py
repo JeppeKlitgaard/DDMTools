@@ -4,7 +4,8 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Optional, Sequence
+from typing import Any, Optional, Sequence
+from typing_extensions import Literal
 
 import numpy as np
 import pandas as pd
@@ -718,7 +719,7 @@ class DDM:
 
     @classmethod
     def from_folder(
-        cls: DDM,
+        cls,
         folder: Path,
         framerate: float,
         micrometre_per_pixel: float,
