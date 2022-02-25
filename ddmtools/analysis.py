@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import os
 import re
+import warnings
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Optional, Sequence
 
 import numpy as np
@@ -144,7 +144,12 @@ class MinimizingResult:
             while True:
                 logx = log_qs.copy()
                 logy = log_tau_cs.copy()
-                weights = 1 / (unp.std_devs(logy) ** 2)
+
+                variance = unp.std_devs(logy) ** 2
+                if 0.0 in variance:
+                    weights = None
+                else:
+                    weights = 1 / variance
 
                 X = logx
                 X = sm.add_constant(X)
@@ -161,8 +166,12 @@ class MinimizingResult:
                     rolling_results.params.iloc[:, 1]
                 )
 
-                best_rsq = np.nanmax(signed_rsquared)
-                idx_best_rsq = np.nanargmax(signed_rsquared)
+                if np.isnan(signed_rsquared).all():
+                    best_rsq = 0.0
+                    idx_best_rsq = 0
+                else:
+                    best_rsq = np.nanmax(signed_rsquared)
+                    idx_best_rsq = np.nanargmax(signed_rsquared)
 
                 if best_rsq >= minimal_r_squared:
                     break
@@ -194,8 +203,12 @@ class MinimizingResult:
 
                 fit_fraction = max(fit_fraction - fit_fraction_step, fit_fraction_minimum)
 
-            iqmin = idx_best_rsq - window + 1
-            iqmax = idx_best_rsq
+            if best_rsq == 0.0:
+                iqmin = 0
+                iqmax = len(logy) - 1
+            else:
+                iqmin = idx_best_rsq - window + 1
+                iqmax = idx_best_rsq
 
             # Refit using regular WLS model to get RegressionResult instance
             # in addition to RollingRegressionResult
@@ -203,7 +216,13 @@ class MinimizingResult:
             single_endog = unp.nominal_values(logy[iqmin:iqmax])
             single_x = logx[iqmin:iqmax]
             single_X = sm.add_constant(single_x)
-            single_weights = 1 / (unp.std_devs(logy[iqmin:iqmax]) ** 2)
+
+            single_variance = variance[iqmin:iqmax]
+            if 0.0 in single_variance:
+                single_weights = 1.0
+            else:
+                single_weights = 1 / single_variance
+
             single_wls = sm.WLS(
                 single_endog,
                 single_X,
@@ -901,7 +920,7 @@ class DDM:
         pattern = re.compile(r"^([a-zA-Z_]+)_([0-9]+)?(.*)$")
 
         if not minimizer_result.errorbars:
-            raise ValueError("Was unable to estimate errors. Likely not enough data.")
+            warnings.warn("Was unable to estimate errors. Likely not enough data.")
 
         data_dict: dict[str, ufloat] = {}
         beta_dict: dict[str, ufloat] = {}
@@ -922,7 +941,7 @@ class DDM:
             assert idx == len(data_dict[new_name])
 
             resolved_param = minimizer_result.params[match.group(0)]
-            param_uf = ufloat(resolved_param.value, resolved_param.stderr)
+            param_uf = ufloat(resolved_param.value, resolved_param.stderr or 0.0)
             data_dict[new_name].append(param_uf)
 
         df = pd.DataFrame.from_dict(data_dict)
@@ -932,7 +951,7 @@ class DDM:
             if i == 0:
                 continue
 
-            beta_uf = ufloat(beta.value, beta.stderr)
+            beta_uf = ufloat(beta.value, beta.stderr or 0.0)
 
             df[f"tau_c_{i}"] = df["tau_c_0"] / beta_uf
 
