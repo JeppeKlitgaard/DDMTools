@@ -803,8 +803,8 @@ class DDM:
         return fig
 
     def plot_image_structure_function(self, n_q: int) -> Figure:
-        self._require_attr("iqtaus")
-        self._require_attr("taus")
+        assert self.iqtaus is not None
+        assert self.taus is not None
 
         fig = plt.figure()
         fig.set_dpi(150)
@@ -841,6 +841,8 @@ class DDM:
     def iqtaus_to_qs(self, iqtaus: Optional[np.ndarray] = None) -> np.ndarray:
         if iqtaus is None:
             iqtaus = self.iqtaus
+
+        assert iqtaus is not None
 
         nqs = iqtaus.shape[-1]
         qs: np.ndarray = 2 * np.pi / (2 * nqs * self.micrometre_per_pixel) * np.arange(1, nqs + 1)
@@ -989,13 +991,15 @@ class DDM:
         if not method_sequence:
             method_sequence = ["leastsq"]
 
-        if not iqtaus:
-            self._require_attr("iqtaus")
+        if iqtaus is None:
             iqtaus = self.iqtaus
 
-        if not taus:
-            self._require_attr("taus")
+        assert iqtaus is not None
+
+        if taus is None:
             taus = self.taus
+
+        assert taus is not None
 
         iqtaus = iqtaus[: self.T_MAX]  # Don't fit last 6
         times = self.taus_to_times(taus[: self.T_MAX])
@@ -1147,8 +1151,8 @@ class DDM:
 
     # TODO: Refactor
     def fit_image_structure_functions_monodisperse(self) -> tuple[np.ndarray, np.ndarray]:
-        self._require_attr("iqtaus")
-        self._require_attr("taus")
+        assert self.iqtaus is not None
+        assert self.taus is not None
 
         nqs = self.iqtaus.shape[-1]
         times = self.taus_to_times(self.taus)
