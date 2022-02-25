@@ -52,6 +52,7 @@ colorcet = "^3.0.0"
 typing-extensions = "^4.1.1"
 ipywidgets = "^7.6.5"
 jupyter = "^1.0.0"
+opencv-python = "(>=4.5.5,<4.5.5.62 || >4.5.5.62,<5.0.0)"
 
 [tool.poetry.dev-dependencies]
 isort = "^5.10.1"
@@ -81,6 +82,7 @@ module = [
     "tqdm.*",
     "numba.*",
     "PIL.*",
+    "cv2.*",
 ]
 ignore_missing_imports = true
 
