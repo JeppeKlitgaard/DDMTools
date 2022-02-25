@@ -37,7 +37,7 @@ from ddmtools.isf import (
     array_objective,
     wrap_parameters,
 )
-from ddmtools.utils import ProgressParallel, log_spaced, pd_nom, pd_sd
+from ddmtools.utils import ProgressParallel, log_spaced, pd_nom, pd_sd, removeprefix
 
 CPU_COUNT = os.cpu_count() or 1
 
@@ -950,7 +950,7 @@ class DDM:
         df = pd.DataFrame.from_dict(data_dict)
 
         for beta_name, beta in beta_dict.items():
-            i = int(beta_name.removeprefix("beta_"))
+            i = int(removeprefix(beta_name, "beta_"))
             if i == 0:
                 continue
 
