@@ -713,35 +713,6 @@ class DDM:
 
         self.radial_averager = RadialAverager(stack.shape)
 
-    def _require_attr(self, attr: str) -> None:
-        if getattr(self, attr) is None:
-            msg = (
-                "DDM object is in illegal state for requested operation. " f"`{attr}`` must be set."
-            )
-
-            raise ValueError(msg)
-
-    @classmethod
-    def from_folder(
-        cls,
-        folder: Path,
-        framerate: float,
-        micrometre_per_pixel: float,
-        temperature: float,
-        viscosity: float,
-        glob_pattern: str = "*.pgm",
-    ) -> DDM:
-
-        stack = Framestack.from_folder(folder, glob_pattern=glob_pattern)
-
-        return cls(
-            stack=stack,
-            framerate=framerate,
-            micrometre_per_pixel=micrometre_per_pixel,
-            temperature=temperature,
-            viscosity=viscosity,
-        )
-
     def get_differential_spectrum(self, idx1: int, idx2: int) -> np.ndarray:
         diff = differential_spectrum(self.stack[idx1], self.stack[idx2], workers=self.workers)
 
