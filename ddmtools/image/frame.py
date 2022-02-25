@@ -10,6 +10,7 @@ import cv2
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from PIL import Image
+from tqdm.auto import tqdm
 
 from ddmtools.utils import get_centre_matrix
 
@@ -90,8 +91,8 @@ class Framestack:
 
         self._shape: Optional[ImageDimension] = shape
 
-    def load(self) -> None:
-        for frame in list(self.frames):
+    def load(self, show_progress: bool = True) -> None:
+        for frame in tqdm(list(self.frames), disable=not show_progress):
             try:
                 frame.load()
             except IOError:
