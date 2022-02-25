@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -41,13 +41,15 @@ def get_centre_matrix(big_matrix: np.ndarray, small_matrix_shape: Tuple[int, int
 
 
 # https://stackoverflow.com/a/61900501/5036246
-class ProgressParallel(Parallel):
-    def __init__(self, use_tqdm: bool = True, total: Optional[int] = None, *args, **kwargs):
+class ProgressParallel(Parallel):  # type: ignore
+    def __init__(
+        self, use_tqdm: bool = True, total: Optional[int] = None, *args: Any, **kwargs: Any
+    ):
         self._use_tqdm = use_tqdm
         self._total = total
         super().__init__(*args, **kwargs)
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
         with tqdm(disable=not self._use_tqdm, total=self._total) as self._pbar:
             return Parallel.__call__(self, *args, **kwargs)
 

@@ -587,7 +587,7 @@ def ddm(
     max_couples: int = 100,
     progress_bar: bool = True,
     workers: int = -1,
-):
+) -> np.ndarray:
     radial_average = RadialAverager(stack.shape)
 
     # Parallise using joblib
@@ -619,7 +619,7 @@ def differential_spectrum(frame1: np.ndarray, frame2: np.ndarray, workers: int =
         transformed = scipy.fft.fft2(diff, overwrite_x=True, workers=workers)
 
     absed = np.abs(transformed)
-    squared = np.square(absed)
+    squared: np.ndarray = np.square(absed)
 
     return squared
 
@@ -641,9 +641,10 @@ def time_average(
         delayed(differential_spectrum)(stack[t], stack[t + n_tau]) for t in initial_times
     )
 
-    avg_fft = np.sum(sums, axis=0)
+    fft_sum = np.sum(sums, axis=0)
+    avg_fft: np.ndarray = fft_sum / len(initial_times)
 
-    return avg_fft / len(initial_times)
+    return avg_fft
 
 
 class RadialAverager(object):
@@ -679,8 +680,9 @@ class RadialAverager(object):
         assert spectrum.shape == self.dists.shape
 
         hw = np.histogram(self.dists, self.bins, weights=spectrum)[0]
+        average: np.ndarray = hw / self.pixel_density
 
-        return hw / self.pixel_density
+        return average
 
 
 class DDM:
@@ -705,7 +707,7 @@ class DDM:
         self.iqtaus: Optional[np.ndarray] = None
         self.tau_range: Optional[tuple[int, int]] = None
 
-        self.workers: int = workers or os.cpu_count()
+        self.workers: int = workers or CPU_COUNT
 
         self.radial_averager = RadialAverager(stack.shape)
 
@@ -839,7 +841,7 @@ class DDM:
             iqtaus = self.iqtaus
 
         nqs = iqtaus.shape[-1]
-        qs = 2 * np.pi / (2 * nqs * self.micrometre_per_pixel) * np.arange(1, nqs + 1)
+        qs: np.ndarray = 2 * np.pi / (2 * nqs * self.micrometre_per_pixel) * np.arange(1, nqs + 1)
 
         return qs
 
@@ -866,7 +868,7 @@ class DDM:
     @staticmethod
     def _loop_intermediate_scattering_function(
         params: Parameters, times: np.ndarray, j: int, i: int
-    ):
+    ) -> np.ndarray:
         r"""
         This is a single $f_i(q, t) = α_i * \exp(-\frac{t}{{γ_i ⋅ τ_ci})
         """
@@ -875,7 +877,7 @@ class DDM:
         alpha_i = params[f"alpha_{j}_{i}"]
         beta_i = params[f"beta_{i}"]
 
-        f_i = alpha_i * np.exp(-times / (beta_i * tau_c_0))
+        f_i: np.ndarray = alpha_i * np.exp(-times / (beta_i * tau_c_0))
 
         return f_i
 
@@ -885,7 +887,7 @@ class DDM:
         times: np.ndarray,
         j: int,
         dispersity_order: int,
-    ):
+    ) -> np.ndarray:
 
         A = params[f"A_{j}"]
         B = params[f"B_{j}"]
@@ -895,14 +897,14 @@ class DDM:
         for i in range(dispersity_order):
             F += DDM._loop_intermediate_scattering_function(params, times, j, i)
 
-        I = A * (1 - F) + B
+        I: np.ndarray = A * (1 - F) + B
 
         return I
 
     @staticmethod
     def _loop_objective(
-        params: Parameters, iqtaus: np.ndarray, times: np.ndarray, dispersity_order
-    ):
+        params: Parameters, iqtaus: np.ndarray, times: np.ndarray, dispersity_order: int
+    ) -> np.ndarray:
         residuals = 0.0 * iqtaus.T
 
         for j, iqtau in enumerate(iqtaus.T):
@@ -916,7 +918,8 @@ class DDM:
 
             residuals[j, :] = log_experimental_data - log_guess
 
-        return residuals.T.flatten()
+        flattened: np.ndarray = residuals.T.flatten()
+        return flattened
 
     @staticmethod
     def _minimizer_result_to_df(minimizer_result: MinimizerResult) -> pd.DataFrame:
@@ -1062,7 +1065,7 @@ class DDM:
             smoothing=0.05,
         )
 
-        def iter_callback(params, iter, resid, *args, **kws):
+        def iter_callback(params: Any, iter: Any, resid: Any, *args: Any, **kws: Any) -> Any:
             pbar.update()
 
         for k, method in enumerate(method_sequence):
@@ -1130,7 +1133,9 @@ class DDM:
 
         I = A * (1 - f) + B
 
-        return np.log(I)
+        logI: np.ndarray = np.log(I)
+
+        return logI
 
     @staticmethod
     def _isf_fitter(parameters: Sequence[Any], taus: Sequence[float], log_iqtau: Any) -> Any:
