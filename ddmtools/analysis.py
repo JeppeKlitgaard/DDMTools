@@ -325,8 +325,8 @@ class FitResult(MinimizingResult):
             plt.fill_between(fit_qs, lower, upper, alpha=0.1, color=color)
 
         plt.axvspan(
-            qs[self.dispersity_mode_fits[1].tau_range[0]],
-            qs[self.dispersity_mode_fits[1].tau_range[1]],
+            qs[self.dispersity_mode_fits[0].tau_range[0]],
+            qs[self.dispersity_mode_fits[0].tau_range[1]],
             color="black",
             alpha=0.1,
         )
