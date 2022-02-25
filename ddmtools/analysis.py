@@ -177,6 +177,7 @@ class MinimizingResult:
                     window = best_attempt["window"]
                     rolling_results = best_attempt["result"]
                     best_rsq = best_attempt["best_rsq"]
+                    idx_best_rsq = best_attempt["idx_best_rsq"]
 
                     break
 
@@ -187,6 +188,7 @@ class MinimizingResult:
                         "window": window,
                         "result": rolling_results,
                         "best_rsq": best_rsq,
+                        "idx_best_rsq": idx_best_rsq,
                     }
                 )
 
