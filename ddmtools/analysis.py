@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 import warnings
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Optional, Sequence
 
 import numpy as np
@@ -42,6 +42,30 @@ from ddmtools.utils import ProgressParallel, log_spaced, pd_nom, pd_sd, removepr
 CPU_COUNT = os.cpu_count() or 1
 
 # Some of this code is lifted shamelessly from https://github.com/MathieuLeocmach/DDM
+
+
+@dataclass
+class FittingAttempt:
+    fit_fraction: float
+    window: int
+    rsq: float
+    idx: int
+
+    rolling_model: RollingWLS
+    rolling_results: RollingRegressionResults
+
+    @property
+    def range(self) -> slice:
+        tau_min = self.idx
+        tau_max = self.idx + self.window - 1
+
+        return slice(tau_min, tau_max)
+
+
+@dataclass
+class FinalFitting(FittingAttempt):
+    model: sm.WLS
+    results: RegressionResults
 
 
 @dataclass
@@ -140,7 +164,7 @@ class MinimizingResult:
             log_tau_cs = unp.log(tau_cs)
 
             # Loop over decreasing fit fractions until we give up or find a good match
-            past_attempted_fits: list[dict[str, Any]] = []
+            past_attempted_fits: list[FittingAttempt] = []
             while True:
                 logx = log_qs.copy()
                 logy = log_tau_cs.copy()
@@ -167,57 +191,47 @@ class MinimizingResult:
                 )
 
                 if np.isnan(signed_rsquared).all():
-                    best_rsq = 0.0
-                    idx_best_rsq = 0
+                    rsq = 0.0
+                    idx = 0
                 else:
-                    best_rsq = np.nanmax(signed_rsquared)
-                    idx_best_rsq = np.nanargmax(signed_rsquared)
+                    rsq = np.nanmax(signed_rsquared)
+                    idx = np.nanargmax(signed_rsquared) - window
 
-                if best_rsq >= minimal_r_squared:
+                    attempt = FittingAttempt(
+                        fit_fraction=fit_fraction,
+                        window=window,
+                        rsq=rsq,
+                        idx=idx,
+                        rolling_model=rolling_wls,
+                        rolling_results=rolling_results,
+                    )
+
+                if rsq >= minimal_r_squared:
+                    best_fit = attempt
                     break
 
                 if fit_fraction == fit_fraction_minimum:
                     # Recover best past fit
-                    best_attempt = sorted(
-                        past_attempted_fits, key=lambda fit: fit["best_rsq"], reverse=True
-                    )[0]
+                    best_fit = sorted(past_attempted_fits, key=lambda fit: fit.rsq, reverse=True)[0]
 
-                    fit_fraction = best_attempt["fit_fraction"]
-                    window = best_attempt["window"]
-                    rolling_results = best_attempt["result"]
-                    best_rsq = best_attempt["best_rsq"]
-                    idx_best_rsq = best_attempt["idx_best_rsq"]
-
+                    best_fit.rsq = np.nan
+                    best_fit.idx = 0
+                    best_fit.window = len(log_qs)
                     break
 
                 # Save attempted fit
-                past_attempted_fits.append(
-                    {
-                        "fit_fraction": fit_fraction,
-                        "window": window,
-                        "result": rolling_results,
-                        "best_rsq": best_rsq,
-                        "idx_best_rsq": idx_best_rsq,
-                    }
-                )
+                past_attempted_fits.append(attempt)
 
                 fit_fraction = max(fit_fraction - fit_fraction_step, fit_fraction_minimum)
-
-            if best_rsq == 0.0:
-                iqmin = 0
-                iqmax = len(logy) - 1
-            else:
-                iqmin = idx_best_rsq - window + 1
-                iqmax = idx_best_rsq
 
             # Refit using regular WLS model to get RegressionResult instance
             # in addition to RollingRegressionResult
             # We use this to easily get predictions later
-            single_endog = unp.nominal_values(logy[iqmin:iqmax])
-            single_x = logx[iqmin:iqmax]
+            single_endog = unp.nominal_values(logy[best_fit.range])
+            single_x = logx[best_fit.range]
             single_X = sm.add_constant(single_x)
 
-            single_variance = variance[iqmin:iqmax]
+            single_variance = variance[best_fit.range]
             if 0.0 in single_variance:
                 single_weights = 1.0
             else:
@@ -231,6 +245,10 @@ class MinimizingResult:
             )
             single_results = single_wls.fit()
 
+            final_fitting = FinalFitting(
+                **asdict(best_fit), model=single_wls, results=single_results
+            )
+
             b, a = single_results.params
             b_std_dev, a_std_dev = single_results.bse
 
@@ -240,18 +258,10 @@ class MinimizingResult:
             diff_coeff = umath.exp(-b_uf)
 
             dispersity_mode_fit = DispersityModeFitResult(
-                rolling_model=rolling_wls,
-                rolling_results=rolling_results,
-                model=single_wls,
-                results=single_results,
+                fit=final_fitting,
                 b=b_uf,
                 a=a_uf,
-                fit_fraction=fit_fraction,
-                window=window,
-                r_squared=best_rsq,
                 diffusion_coefficient=diff_coeff,
-                idx_best_rsq=idx_best_rsq,
-                tau_range=(iqmin, iqmax),
             )
 
             dispersity_mode_fits.append(dispersity_mode_fit)
@@ -275,18 +285,10 @@ class MinimizingResult:
 
 @dataclass
 class DispersityModeFitResult:
-    rolling_model: RollingWLS
-    rolling_results: RollingRegressionResults
-    model: sm.WLS
-    results: RegressionResults
+    fit: FinalFitting
     b: UFloat
     a: UFloat
-    fit_fraction: float
-    window: int
-    r_squared: float
     diffusion_coefficient: UFloat
-    idx_best_rsq: int
-    tau_range: tuple[int, int]
 
 
 @dataclass
@@ -294,9 +296,9 @@ class FitResult(MinimizingResult):
     dispersity_mode_fits: list[DispersityModeFitResult]
 
     @staticmethod
-    def _calculate_delta_t_qs(tau_range: tuple[int, int], num_delta_t_lines: int) -> np.ndarray:
+    def _calculate_delta_t_qs(tau_range: slice, num_delta_t_lines: int) -> np.ndarray:
         delta_t_qs = np.logspace(
-            np.log10(tau_range[0]), np.log10(tau_range[1]), num_delta_t_lines, base=10
+            np.log10(tau_range.start), np.log10(tau_range.stop), num_delta_t_lines, base=10
         ).astype(int)
 
         return delta_t_qs
@@ -331,7 +333,7 @@ class FitResult(MinimizingResult):
             fit_qs = np.logspace(np.log10(min(qs)), np.log10(max(qs)), 1000)
             fit_log_qs = np.log(fit_qs)
             fit_X = sm.add_constant(fit_log_qs)
-            prediction = mode_fit.results.get_prediction(fit_X)
+            prediction = mode_fit.fit.results.get_prediction(fit_X)
             prediction_summary = prediction.summary_frame(alpha=1.0 - 0.6827)  # 1 sigma
 
             mean = np.exp(prediction_summary["mean"].values)
@@ -344,8 +346,8 @@ class FitResult(MinimizingResult):
             plt.fill_between(fit_qs, lower, upper, alpha=0.1, color=color)
 
         plt.axvspan(
-            qs[self.dispersity_mode_fits[0].tau_range[0]],
-            qs[self.dispersity_mode_fits[0].tau_range[1]],
+            qs[self.dispersity_mode_fits[0].fit.range.start],
+            qs[self.dispersity_mode_fits[0].fit.range.stop],
             color="black",
             alpha=0.1,
         )
@@ -418,7 +420,7 @@ class FitResult(MinimizingResult):
         ax2 = plt.subplot(1, 2, 2, sharey=ax1)
 
         delta_t_qs = self._calculate_delta_t_qs(
-            self.dispersity_mode_fits[dispersity_mode].tau_range,
+            self.dispersity_mode_fits[dispersity_mode].fit.range,
             num_delta_t_lines=num_delta_t_lines,
         )
 
@@ -473,7 +475,7 @@ class FitResult(MinimizingResult):
         times = self.times
         iqtaus = self.iqtaus
 
-        tau_range = dispersity_fit.tau_range
+        tau_range = [dispersity_fit.fit.range.start, dispersity_fit.fit.range.stop]
         qs_range = [qs[tau] for tau in tau_range]
 
         # Calculate fitted and experimental intermediate scattering functions
@@ -493,7 +495,7 @@ class FitResult(MinimizingResult):
         experiment_fs = 1 - (fitted_iqtaus - np.array(bs)[:, None]) / np.array(as_)[:, None]
 
         delta_t_qs = self._calculate_delta_t_qs(
-            tau_range=tau_range, num_delta_t_lines=num_delta_t_lines
+            tau_range=dispersity_fit.fit.range, num_delta_t_lines=num_delta_t_lines
         )
 
         fig = plt.figure()
@@ -540,11 +542,11 @@ class FitResult(MinimizingResult):
                 color=plt.cm.autumn_r(norm(qs[iq])),
             )
 
-        plt.plot(
-            qs[dispersity_fit.idx_best_rsq] ** 2 * times,
-            fitted_fs[dispersity_fit.idx_best_rsq, :],
-            "-k",
-        )
+            plt.plot(
+                qs[iq] ** 2 * times,
+                fitted_fs[iq, :],
+                "-k",
+            )
 
         cbar1 = plt.colorbar(
             plt.cm.ScalarMappable(norm=norm, cmap=plt.cm.autumn_r),
@@ -593,81 +595,6 @@ class FitResult(MinimizingResult):
         return particle_diameters
 
 
-def _ddm_do_step(
-    stack: Framestack, n_tau: int, max_couples: int, radial_average: RadialAverager
-) -> np.ndarray:
-    time_averaged = time_average(stack, n_tau, max_couples=max_couples)
-    radial_averaged = radial_average(time_averaged)
-
-    return radial_averaged
-
-
-def ddm(
-    stack: Framestack,
-    n_taus: Sequence[int],
-    max_couples: int = 100,
-    progress_bar: bool = True,
-    workers: int = -1,
-) -> np.ndarray:
-    radial_average = RadialAverager(stack.shape)
-
-    # Parallise using joblib
-    with ProgressParallel(
-        n_jobs=workers,
-        prefer="threads",
-        use_tqdm=progress_bar,
-        total=len(n_taus),
-    ) as parallel:
-        out = parallel(
-            delayed(_ddm_do_step)(stack, n_tau, max_couples, radial_average) for n_tau in n_taus
-        )
-
-    return np.array(out)
-
-
-@njit(parallel=True)
-def differential_spectrum(frame1: np.ndarray, frame2: np.ndarray, workers: int = 0) -> np.ndarray:
-    """
-    This performs an FFT on the difference between the two frames.
-    """
-    # Todo: CuFFT
-    if workers == 0:
-        workers = CPU_COUNT
-
-    diff: np.ndarray = frame1 - frame2
-
-    with objmode(transformed="complex128[:, :]"):
-        transformed = scipy.fft.fft2(diff, overwrite_x=True, workers=workers)
-
-    absed = np.abs(transformed)
-    squared: np.ndarray = np.square(absed)
-
-    return squared
-
-
-def time_average(
-    stack: Framestack, n_tau: int, max_couples: int = 300, workers: int = 0
-) -> np.ndarray:
-    if workers == 0:
-        workers = CPU_COUNT
-
-    # How many frames to increment by
-    increment = max([(len(stack) - n_tau) // max_couples, 1])
-
-    # Precompute all initial times
-    initial_times = np.arange(0, len(stack) - n_tau, increment)
-
-    # Parallise using joblib
-    sums = Parallel(n_jobs=workers, prefer="threads")(
-        delayed(differential_spectrum)(stack[t], stack[t + n_tau]) for t in initial_times
-    )
-
-    fft_sum = np.sum(sums, axis=0)
-    avg_fft: np.ndarray = fft_sum / len(initial_times)
-
-    return avg_fft
-
-
 class RadialAverager(object):
     """Radial average of a 2D array centred on (0,0), like the result of fft2d."""
 
@@ -706,96 +633,32 @@ class RadialAverager(object):
         return average
 
 
-class DDM:
-    T_MAX: int = -6
+@dataclass
+class DDMAnalysis:
+    T_MAX = -6
 
-    def __init__(
-        self,
-        stack: Framestack,
-        framerate: float,
-        temperature: float,
-        viscosity: float,
-        micrometre_per_pixel: float,
-        workers: Optional[int] = None,
-    ) -> None:
-        self.stack = stack
-        self.framerate = framerate
-        self.temperature = temperature
-        self.viscosity = viscosity
-        self.micrometre_per_pixel = micrometre_per_pixel
+    taus: np.ndarray
+    iqtaus: np.ndarray
 
-        self.taus: Optional[np.ndarray] = None
-        self.iqtaus: Optional[np.ndarray] = None
-        self.tau_range: Optional[tuple[int, int]] = None
+    framerate: float
+    temperature: float
+    viscosity: float
+    micrometre_per_pixel: float
 
-        self.workers: int = workers or CPU_COUNT
+    def tau_to_time(self, tau: int) -> float:
+        return tau / self.framerate
 
-        self.radial_averager = RadialAverager(stack.shape)
+    def taus_to_times(self, taus: np.ndarray) -> np.ndarray:
+        times: np.ndarray = taus / self.framerate
+        return times
 
-    def get_differential_spectrum(self, idx1: int, idx2: int) -> np.ndarray:
-        diff = differential_spectrum(self.stack[idx1], self.stack[idx2], workers=self.workers)
+    def iqtaus_to_qs(self, iqtaus: np.ndarray) -> np.ndarray:
+        nqs = iqtaus.shape[-1]
+        qs: np.ndarray = 2 * np.pi / (2 * nqs * self.micrometre_per_pixel) * np.arange(1, nqs + 1)
 
-        return diff
-
-    def plot_differential_spectrum(
-        self, differential_spectrum: np.ndarray, brightness: float = 1.0
-    ) -> Figure:
-        fig = plt.figure()
-        plt.imshow(
-            scipy.fft.fftshift(differential_spectrum),
-            "hot",
-            vmin=0.0,
-            vmax=differential_spectrum.max() / brightness,
-        )
-
-        return fig
-
-    def get_time_average(self, n_tau: int, *, max_couples: int = 50) -> np.ndarray:
-        average = time_average(
-            self.stack, n_tau=n_tau, max_couples=max_couples, workers=self.workers
-        )
-
-        return average
-
-    def plot_time_average(self, average: np.ndarray, brightness: float = 1.0) -> Figure:
-        fig = plt.figure()
-        plt.imshow(
-            scipy.fft.fftshift(average),
-            "hot",
-            vmin=0.0,
-            vmax=average.max() / brightness,
-        )
-
-        return fig
-
-    def get_radial_average(self, matrix: np.ndarray) -> np.ndarray:
-        if self.radial_averager.shape != self.stack.shape:
-            self.radial_averager = RadialAverager(self.stack.shape)
-
-        average = self.radial_averager(matrix)
-
-        return average
-
-    def plot_radial_average(self, average_array: np.ndarray) -> Figure:
-        fig = plt.Figure()
-        fig.set_dpi(150)
-
-        plt.plot(average_array)
-
-        plt.ylabel("Intensity, arb. unit")
-        plt.xlabel("Radial Distance, px")
-
-        plt.xscale("log")
-        plt.yscale("log")
-
-        plt.title("Radial Average")
-
-        return fig
+        return qs
 
     def plot_image_structure_function(self, n_q: int) -> Figure:
-        assert self.iqtaus is not None
-        assert self.taus is not None
-
         fig = plt.figure()
         fig.set_dpi(150)
         fig.set_size_inches(10, 6)
@@ -818,46 +681,6 @@ class DDM:
         )
 
         return fig
-
-    def get_log_spaced_taus(self, taus_per_decade: int = 25) -> Sequence[int]:
-        return log_spaced(len(self.stack), taus_per_decade)
-
-    def tau_to_time(self, tau: int) -> float:
-        return tau / self.framerate
-
-    def taus_to_times(self, taus: np.ndarray) -> np.ndarray:
-        return taus / self.framerate
-
-    def iqtaus_to_qs(self, iqtaus: Optional[np.ndarray] = None) -> np.ndarray:
-        if iqtaus is None:
-            iqtaus = self.iqtaus
-
-        assert iqtaus is not None
-
-        nqs = iqtaus.shape[-1]
-        qs: np.ndarray = 2 * np.pi / (2 * nqs * self.micrometre_per_pixel) * np.arange(1, nqs + 1)
-
-        return qs
-
-    # TODO: Change to run_ddm
-    def analyse(
-        self,
-        taus: Sequence[int],
-        *,
-        max_couples: int = 50,
-        progress_bar: bool = True,
-        workers: int = -1,
-    ) -> np.ndarray:
-        iqtaus = ddm(
-            self.stack, taus, max_couples=max_couples, progress_bar=progress_bar, workers=workers
-        )
-
-        self.taus = taus
-        self.iqtaus = iqtaus
-
-        return iqtaus
-
-    # Post analyse tools
 
     @staticmethod
     def _loop_intermediate_scattering_function(
@@ -889,7 +712,7 @@ class DDM:
         F = np.zeros(times.shape)
 
         for i in range(dispersity_order):
-            F += DDM._loop_intermediate_scattering_function(params, times, j, i)
+            F += DDMAnalysis._loop_intermediate_scattering_function(params, times, j, i)
 
         I: np.ndarray = A * (1 - F) + B
 
@@ -907,7 +730,7 @@ class DDM:
             experimental_data = iqtau.T
             log_experimental_data = np.log(experimental_data)
 
-            guess = DDM._loop_image_structure_function(params, times, j, dispersity_order)
+            guess = DDMAnalysis._loop_image_structure_function(params, times, j, dispersity_order)
             log_guess = np.log(guess)
 
             residuals[j, :] = log_experimental_data - log_guess
@@ -960,8 +783,6 @@ class DDM:
     def fit_image_structure_functions_polydisperse(
         self,
         dispersity_order: int,
-        iqtaus: Optional[np.ndarray] = None,
-        taus: Optional[np.ndarray] = None,
         method_sequence: Optional[list[str]] = None,
         objective_method: Literal["loop", "array"] = "array",
         max_nfev: Optional[int] = None,
@@ -981,18 +802,9 @@ class DDM:
         if not method_sequence:
             method_sequence = ["leastsq"]
 
-        if iqtaus is None:
-            iqtaus = self.iqtaus
-
-        assert iqtaus is not None
-
-        if taus is None:
-            taus = self.taus
-
-        assert taus is not None
-
-        iqtaus = iqtaus[: self.T_MAX]  # Don't fit last 6
-        times = self.taus_to_times(taus[: self.T_MAX])
+        iqtaus = self.iqtaus[: self.T_MAX]  # Don't fit last 6
+        taus = self.taus[: self.T_MAX]
+        times = self.taus_to_times(taus)
 
         fit_params = lmfit.Parameters()
 
@@ -1102,7 +914,7 @@ class DDM:
         return result
 
     @staticmethod
-    def _log_isf_monodisperse(parameters: Sequence[Any], taus: Sequence[float]) -> np.ndarray:
+    def _log_isf_monodisperse(parameters: Sequence[Any], taus: np.ndarray) -> np.ndarray:
         r"""
         $$
         I(q, τ) = A(q) * \qty[1 - f(q, τ)] + B(q)
@@ -1134,8 +946,8 @@ class DDM:
         return logI
 
     @staticmethod
-    def _isf_fitter(parameters: Sequence[Any], taus: Sequence[float], log_iqtau: Any) -> Any:
-        x = DDM._log_isf_monodisperse(parameters, taus) - log_iqtau
+    def _isf_fitter(parameters: Sequence[Any], taus: np.ndarray, log_iqtau: Any) -> Any:
+        x = DDMAnalysis._log_isf_monodisperse(parameters, taus) - log_iqtau
 
         return x
 
@@ -1164,3 +976,193 @@ class DDM:
 
         # Return last params for inspection
         return (fitting_matrix, params)
+
+
+class DDM:
+    def __init__(
+        self,
+        stack: Framestack,
+        framerate: float,
+        temperature: float,
+        viscosity: float,
+        micrometre_per_pixel: float,
+        workers: Optional[int] = None,
+    ) -> None:
+        self.stack = stack
+
+        self.framerate = framerate
+        self.temperature = temperature
+        self.viscosity = viscosity
+        self.micrometre_per_pixel = micrometre_per_pixel
+
+        self.tau_range: Optional[tuple[int, int]] = None
+
+        self.workers: int = workers or CPU_COUNT
+
+        self.radial_averager = RadialAverager(stack.shape)
+
+    def get_differential_spectrum(self, idx1: int, idx2: int) -> np.ndarray:
+        diff: np.ndarray = self.differential_spectrum(
+            self.stack[idx1], self.stack[idx2], workers=self.workers
+        )
+
+        return diff
+
+    def plot_differential_spectrum(
+        self, differential_spectrum: np.ndarray, brightness: float = 1.0
+    ) -> Figure:
+        fig = plt.figure()
+        plt.imshow(
+            scipy.fft.fftshift(differential_spectrum),
+            "hot",
+            vmin=0.0,
+            vmax=differential_spectrum.max() / brightness,
+        )
+
+        return fig
+
+    def get_time_average(self, n_tau: int, *, max_couples: int = 50) -> np.ndarray:
+        average = self.time_average(
+            self.stack, n_tau=n_tau, max_couples=max_couples, workers=self.workers
+        )
+
+        return average
+
+    def plot_time_average(self, average: np.ndarray, brightness: float = 1.0) -> Figure:
+        fig = plt.figure()
+        plt.imshow(
+            scipy.fft.fftshift(average),
+            "hot",
+            vmin=0.0,
+            vmax=average.max() / brightness,
+        )
+
+        return fig
+
+    def get_radial_average(self, matrix: np.ndarray) -> np.ndarray:
+        if self.radial_averager.shape != self.stack.shape:
+            self.radial_averager = RadialAverager(self.stack.shape)
+
+        average = self.radial_averager(matrix)
+
+        return average
+
+    def plot_radial_average(self, average_array: np.ndarray) -> Figure:
+        fig = plt.Figure()
+        fig.set_dpi(150)
+
+        plt.plot(average_array)
+
+        plt.ylabel("Intensity, arb. unit")
+        plt.xlabel("Radial Distance, px")
+
+        plt.xscale("log")
+        plt.yscale("log")
+
+        plt.title("Radial Average")
+
+        return fig
+
+    def get_log_spaced_taus(self, taus_per_decade: int = 25) -> np.ndarray:
+        return log_spaced(len(self.stack), taus_per_decade)
+
+    @staticmethod
+    @njit(parallel=True)  # type: ignore
+    def differential_spectrum(
+        frame1: np.ndarray, frame2: np.ndarray, workers: int = 0
+    ) -> np.ndarray:
+        """
+        This performs an FFT on the difference between the two frames.
+        """
+        # Todo: CuFFT
+        if workers == 0:
+            workers = CPU_COUNT
+
+        diff: np.ndarray = frame1 - frame2
+
+        with objmode(transformed="complex128[:, :]"):
+            transformed = scipy.fft.fft2(diff, overwrite_x=True, workers=workers)
+
+        absed = np.abs(transformed)
+        squared: np.ndarray = np.square(absed)
+
+        return squared
+
+    @staticmethod
+    def time_average(
+        stack: Framestack, n_tau: int, max_couples: int = 300, workers: int = 0
+    ) -> np.ndarray:
+        if workers == 0:
+            workers = CPU_COUNT
+
+        # How many frames to increment by
+        increment = max([(len(stack) - n_tau) // max_couples, 1])
+
+        # Precompute all initial times
+        initial_times = np.arange(0, len(stack) - n_tau, increment)
+
+        # Parallise using joblib
+        sums = Parallel(n_jobs=workers, prefer="threads")(
+            delayed(DDM.differential_spectrum)(stack[t], stack[t + n_tau]) for t in initial_times
+        )
+
+        fft_sum = np.sum(sums, axis=0)
+        avg_fft: np.ndarray = fft_sum / len(initial_times)
+
+        return avg_fft
+
+    @staticmethod
+    def _ddm_do_step(
+        stack: Framestack, n_tau: int, max_couples: int, radial_average: RadialAverager
+    ) -> np.ndarray:
+        time_averaged = DDM.time_average(stack, n_tau, max_couples=max_couples)
+        radial_averaged = radial_average(time_averaged)
+
+        return radial_averaged
+
+    @staticmethod
+    def _run_ddm(
+        stack: Framestack,
+        n_taus: np.ndarray,
+        max_couples: int = 100,
+        progress_bar: bool = True,
+        workers: int = -1,
+    ) -> np.ndarray:
+        radial_average = RadialAverager(stack.shape)
+
+        # Parallise using joblib
+        with ProgressParallel(
+            n_jobs=workers,
+            prefer="threads",
+            use_tqdm=progress_bar,
+            total=len(n_taus),
+        ) as parallel:
+            out = parallel(
+                delayed(DDM._ddm_do_step)(stack, n_tau, max_couples, radial_average)
+                for n_tau in n_taus
+            )
+
+        return np.array(out)
+
+    def run(
+        self,
+        taus: np.ndarray,
+        *,
+        max_couples: int = 50,
+        progress_bar: bool = True,
+        workers: int = -1,
+    ) -> DDMAnalysis:
+        iqtaus = self._run_ddm(
+            self.stack, taus, max_couples=max_couples, progress_bar=progress_bar, workers=workers
+        )
+
+        result = DDMAnalysis(
+            taus=taus,
+            iqtaus=iqtaus,
+            framerate=self.framerate,
+            temperature=self.temperature,
+            viscosity=self.viscosity,
+            micrometre_per_pixel=self.micrometre_per_pixel,
+        )
+
+        return result
