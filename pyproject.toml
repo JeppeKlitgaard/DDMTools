@@ -13,6 +13,7 @@ keywords = [
     "microscopy",
     "physics",
     "fluids",
+    "rheology",
 ]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
@@ -25,7 +26,6 @@ classifiers = [
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Topic :: Multimedia :: Video",
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Image Processing",
@@ -53,6 +53,7 @@ typing-extensions = "^4.1.1"
 ipywidgets = "^7.6.5"
 jupyter = "^1.0.0"
 opencv-python = "(>=4.5.5,<4.5.5.62 || >4.5.5.62,<5.0.0)"
+pyFFTW = {version = "^0.13.0", optional = true}
 
 [tool.poetry.dev-dependencies]
 isort = "^5.10.1"
@@ -62,6 +63,9 @@ poethepoet = "^0.11.0"
 mypy = "^0.910"
 flake8 = "^4.0.1"
 black = {extras = ["jupyter"], version = "^22.1.0"}
+
+[tool.poetry.extras]
+pyfftw = ["PyFFTW"]
 
 # Mypy
 [tool.mypy]
@@ -83,6 +87,7 @@ module = [
     "numba.*",
     "PIL.*",
     "cv2.*",
+    "pyfftw.*",
 ]
 ignore_missing_imports = true
 

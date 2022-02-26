@@ -29,7 +29,7 @@ from typing_extensions import Literal
 from uncertainties import ufloat, umath
 from uncertainties.core import AffineScalarFunc as UFloat
 
-from ddmtools.image.frame import Framestack
+from ddmtools.frame import Framestack
 from ddmtools.isf import (
     array_image_structure_function_wrapper,
     array_intermediate_scattering_function,
@@ -42,6 +42,7 @@ from ddmtools.utils.number import log_spaced
 from ddmtools.utils.progress import ProgressParallel
 from ddmtools.utils.string import removeprefix
 from ddmtools.utils.uncertainty import pd_nom, pd_sd
+from ddmtools.dsp import HalfPlaneRadialAverager, mod_square, rfft2, empty, pyfftw_setup, set_pyfftw_cores
 
 CPU_COUNT = os.cpu_count() or 1
 
@@ -585,44 +586,6 @@ class FitResult(MinimizingResult):
         return particle_diameters
 
 
-class RadialAverager(object):
-    """Radial average of a 2D array centred on (0,0), like the result of fft2d."""
-
-    def __init__(self, shape: tuple[int, int]) -> None:
-        """
-        A RadialAverager instance can process only arrays of a given shape,
-        fixed at instanciation.
-        """
-        self.shape = shape
-
-        if len(shape) != 2:
-            raise ValueError("Invalid shape.")
-
-        # Calculate a matrix of distances in frequency space
-        self.dists = np.sqrt(
-            np.fft.fftfreq(shape[0])[:, None] ** 2 + np.fft.fftfreq(shape[1])[None, :] ** 2
-        )
-
-        # Dump the cross
-        self.dists[0] = 0
-        self.dists[:, 0] = 0
-
-        # Discretize distances into bins
-        self.bins = np.arange(max(shape) // 2 + 1) / float(max(shape))
-
-        # Number of pixels at each distance
-        self.pixel_density = np.histogram(self.dists, self.bins)[0]
-
-    def __call__(self, spectrum: np.ndarray) -> np.ndarray:
-        """Perform and return the radial average of the spectrum"""
-        assert spectrum.shape == self.dists.shape
-
-        hw = np.histogram(self.dists, self.bins, weights=spectrum)[0]
-        average: np.ndarray = hw / self.pixel_density
-
-        return average
-
-
 @dataclass
 class DDMAnalysis:
     T_MAX = -6
@@ -965,13 +928,20 @@ class DDM:
         self,
         stack: Framestack,
         intensive_parameters: IntensiveParameters,
+        workers: Optional[int] = None,
+        setup_pyfftw: bool = True,
     ) -> None:
         self.stack = stack
         self.intensive_parameters = intensive_parameters
 
         self.tau_range: Optional[tuple[int, int]] = None
 
-        self.radial_averager = RadialAverager(stack.shape)
+        self.radial_averager = HalfPlaneRadialAverager(stack.shape)
+        self.workers = workers or CPU_COUNT
+
+        if setup_pyfftw:
+            pyfftw_setup()
+            set_pyfftw_cores(self.workers)
 
     def get_differential_spectrum(self, idx1: int, idx2: int) -> np.ndarray:
         diff: np.ndarray = self.differential_spectrum(
@@ -1013,7 +983,7 @@ class DDM:
 
     def get_radial_average(self, matrix: np.ndarray) -> np.ndarray:
         if self.radial_averager.shape != self.stack.shape:
-            self.radial_averager = RadialAverager(self.stack.shape)
+            self.radial_averager = HalfPlaneRadialAverager(self.stack.shape)
 
         average = self.radial_averager(matrix)
 
@@ -1050,15 +1020,15 @@ class DDM:
         if workers == 0:
             workers = CPU_COUNT
 
-        diff: np.ndarray = frame1 - frame2
+        diff: np.ndarray = empty(frame1.shape, dtype="float64")
+        diff[:] =  frame1 - frame2
 
         with objmode(transformed="complex128[:, :]"):
-            transformed = scipy.fft.fft2(diff, overwrite_x=True, workers=workers)
+            transformed = rfft2(diff, overwrite_x=True, workers=workers)
 
-        absed = np.abs(transformed)
-        squared: np.ndarray = np.square(absed)
+        mod_squared: np.ndarray = mod_square(transformed)
 
-        return squared
+        return mod_squared
 
     @staticmethod
     def time_average(
@@ -1085,7 +1055,7 @@ class DDM:
 
     @staticmethod
     def _ddm_do_step(
-        stack: Framestack, n_tau: int, max_couples: int, radial_average: RadialAverager
+        stack: Framestack, n_tau: int, max_couples: int, radial_average: HalfPlaneRadialAverager
     ) -> np.ndarray:
         time_averaged = DDM.time_average(stack, n_tau, max_couples=max_couples)
         radial_averaged = radial_average(time_averaged)
@@ -1095,13 +1065,12 @@ class DDM:
     @staticmethod
     def _run_ddm(
         stack: Framestack,
+        radial_averager: HalfPlaneRadialAverager,
         n_taus: np.ndarray,
         workers: int = 1,
         max_couples: int = 100,
         progress_bar: bool = True,
     ) -> np.ndarray:
-        radial_average = RadialAverager(stack.shape)
-
         # Parallise using joblib
         with ProgressParallel(
             n_jobs=workers,
@@ -1110,7 +1079,7 @@ class DDM:
             total=len(n_taus),
         ) as parallel:
             out = parallel(
-                delayed(DDM._ddm_do_step)(stack, n_tau, max_couples, radial_average)
+                delayed(DDM._ddm_do_step)(stack, n_tau, max_couples, radial_averager)
                 for n_tau in n_taus
             )
 
@@ -1125,7 +1094,12 @@ class DDM:
         workers: Optional[int] = None,
     ) -> DDMAnalysis:
         iqtaus = self._run_ddm(
-            self.stack, taus, max_couples=max_couples, progress_bar=progress_bar, workers=workers or CPU_COUNT
+            self.stack,
+            self.radial_averager,
+            taus,
+            max_couples=max_couples,
+            progress_bar=progress_bar,
+            workers=workers or self.workers,
         )
 
         result = DDMAnalysis(
