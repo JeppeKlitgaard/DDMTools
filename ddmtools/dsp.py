@@ -2,10 +2,12 @@
 Contains primitive signal processing functionality
 """
 from multiprocessing import cpu_count
+from typing import Optional, Tuple
+
 import numpy as np
 import scipy.fft
+
 import numba
-from typing import Optional, Tuple
 
 try:
     import pyfftw
@@ -24,15 +26,19 @@ def pyfftw_setup() -> None:
         pyfftw.interfaces.cache.enable()
         set_pyfftw_cores(None)
 
+
 def set_pyfftw_cores(num_cores: Optional[int]) -> None:
     if pyfftw is not None:
         pyfftw.config.NUM_THREADS = num_cores or cpu_count()
 
+
 # https://stackoverflow.com/questions/30437947/most-memory-efficient-way-to-compute-abs2-of-complex-numpy-ndarray
-@numba.vectorize([  # type: ignore
-    numba.float64(numba.complex128),
-    numba.float32(numba.complex64),
-])
+@numba.vectorize(  # type: ignore
+    [
+        numba.float64(numba.complex128),
+        numba.float32(numba.complex64),
+    ]
+)
 def mod_square(x: np.ndarray) -> np.ndarray:
     return x.real**2 + x.imag**2  # type: ignore
 

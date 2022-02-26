@@ -29,6 +29,14 @@ from typing_extensions import Literal
 from uncertainties import ufloat, umath
 from uncertainties.core import AffineScalarFunc as UFloat
 
+from ddmtools.dsp import (
+    HalfPlaneRadialAverager,
+    empty,
+    mod_square,
+    pyfftw_setup,
+    rfft2,
+    set_pyfftw_cores,
+)
 from ddmtools.frame import Framestack
 from ddmtools.isf import (
     array_image_structure_function_wrapper,
@@ -42,9 +50,9 @@ from ddmtools.utils.number import log_spaced
 from ddmtools.utils.progress import ProgressParallel
 from ddmtools.utils.string import removeprefix
 from ddmtools.utils.uncertainty import pd_nom, pd_sd
-from ddmtools.dsp import HalfPlaneRadialAverager, mod_square, rfft2, empty, pyfftw_setup, set_pyfftw_cores
 
 CPU_COUNT = os.cpu_count() or 1
+
 
 # Some of this code is lifted shamelessly from https://github.com/MathieuLeocmach/DDM
 @dataclass
@@ -473,8 +481,6 @@ class FitResult(MinimizingResult):
         times = self.analysis.times
         iqtaus = self.analysis.iqtaus
 
-        tau_range = [dispersity_fit.fit.range.start, dispersity_fit.fit.range.stop]
-
         # Calculate fitted and experimental intermediate scattering functions
         fitted_iqtaus = array_image_structure_function_wrapper(
             self.minimizer_result.params, iqtaus, times, self.dispersity_order
@@ -503,7 +509,7 @@ class FitResult(MinimizingResult):
         norm.autoscale(qs)
 
         ax1 = plt.subplot(1, 2, 1)
-        for i, iq in enumerate(delta_t_qs):
+        for iq in delta_t_qs:
             plt.plot(
                 times,
                 experiment_fs[iq, :],
@@ -531,7 +537,7 @@ class FitResult(MinimizingResult):
         plt.xlabel(r"$t \ [s]$")
 
         ax2 = plt.subplot(1, 2, 2, sharey=ax1)
-        for i, iq in enumerate(delta_t_qs):
+        for iq in delta_t_qs:
             plt.plot(
                 qs[iq] ** 2 * times,
                 experiment_fs[iq, :],
@@ -1021,7 +1027,7 @@ class DDM:
             workers = CPU_COUNT
 
         diff: np.ndarray = empty(frame1.shape, dtype="float64")
-        diff[:] =  frame1 - frame2
+        diff[:] = frame1 - frame2
 
         with objmode(transformed="complex128[:, :]"):
             transformed = rfft2(diff, overwrite_x=True, workers=workers)
