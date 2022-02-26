@@ -965,14 +965,11 @@ class DDM:
         self,
         stack: Framestack,
         intensive_parameters: IntensiveParameters,
-        workers: Optional[int] = None,
     ) -> None:
         self.stack = stack
         self.intensive_parameters = intensive_parameters
 
         self.tau_range: Optional[tuple[int, int]] = None
-
-        self.workers: int = workers or CPU_COUNT
 
         self.radial_averager = RadialAverager(stack.shape)
 
@@ -1099,9 +1096,9 @@ class DDM:
     def _run_ddm(
         stack: Framestack,
         n_taus: np.ndarray,
+        workers: int = 1,
         max_couples: int = 100,
         progress_bar: bool = True,
-        workers: int = -1,
     ) -> np.ndarray:
         radial_average = RadialAverager(stack.shape)
 
@@ -1125,10 +1122,10 @@ class DDM:
         *,
         max_couples: int = 50,
         progress_bar: bool = True,
-        workers: int = -1,
+        workers: Optional[int] = None,
     ) -> DDMAnalysis:
         iqtaus = self._run_ddm(
-            self.stack, taus, max_couples=max_couples, progress_bar=progress_bar, workers=workers
+            self.stack, taus, max_couples=max_couples, progress_bar=progress_bar, workers=workers or CPU_COUNT
         )
 
         result = DDMAnalysis(
