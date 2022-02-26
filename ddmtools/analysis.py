@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 import warnings
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 
 import numpy as np
@@ -29,7 +29,6 @@ from typing_extensions import Literal
 from uncertainties import ufloat, umath
 from uncertainties.core import AffineScalarFunc as UFloat
 
-from ddmtools.eq_utils import diameter_calculator
 from ddmtools.image.frame import Framestack
 from ddmtools.isf import (
     array_image_structure_function_wrapper,
@@ -37,13 +36,16 @@ from ddmtools.isf import (
     array_objective,
     wrap_parameters,
 )
-from ddmtools.utils import ProgressParallel, log_spaced, pd_nom, pd_sd, removeprefix
+from ddmtools.types import IntensiveParameters
+from ddmtools.utils.equations import diameter_calculator
+from ddmtools.utils.number import log_spaced
+from ddmtools.utils.progress import ProgressParallel
+from ddmtools.utils.string import removeprefix
+from ddmtools.utils.uncertainty import pd_nom, pd_sd
 
 CPU_COUNT = os.cpu_count() or 1
 
 # Some of this code is lifted shamelessly from https://github.com/MathieuLeocmach/DDM
-
-
 @dataclass
 class FittingAttempt:
     fit_fraction: float
@@ -73,16 +75,7 @@ class MinimizingResult:
     minimizer_result: MinimizerResult
     param_df: pd.DataFrame
     dispersity_order: int
-    iqtaus: np.ndarray
-    taus: np.ndarray
-    times: np.ndarray
-    framerate: float
-    micrometre_per_pixel: float
-    temperature: float
-    viscosity: float
-
-    def tau_to_time(self, tau: int) -> float:
-        return tau / self.framerate
+    analysis: DDMAnalysis
 
     def plot_image_structure_function_params(self) -> Figure:
         ERROR_ALPHA = 0.5
@@ -118,6 +111,9 @@ class MinimizingResult:
         ax1.set_yscale("log")
         ax1.set_ylabel(r"$A(q),\, B(q)$")
 
+        ax1_ypoints = pd_nom(self.param_df["A"]) + pd_nom(self.param_df["B"])
+        ax1.set_ylim(min(ax1_ypoints) * 0.9, max(ax1_ypoints) * 1.1)
+
         ax2 = ax1.twinx()
         ax2_ypoints = []
         ax2_alpha_elements = []
@@ -128,7 +124,7 @@ class MinimizingResult:
                 pd_sd(self.param_df[f"alpha_{i}"]),
                 fmt="+",
                 label=rf"$\alpha_{i}$",
-                color=plt.cm.autumn(i / self.dispersity_order),
+                color=cc.cm.isolum(i / self.dispersity_order),
                 capsize=4,
             )
             ax2_alpha_elements += caps + bars
@@ -246,7 +242,14 @@ class MinimizingResult:
             single_results = single_wls.fit()
 
             final_fitting = FinalFitting(
-                **asdict(best_fit), model=single_wls, results=single_results
+                fit_fraction=best_fit.fit_fraction,
+                window=best_fit.window,
+                rsq=best_fit.rsq,
+                idx=best_fit.idx,
+                rolling_model=best_fit.rolling_model,
+                rolling_results=best_fit.rolling_results,
+                model=single_wls,
+                results=single_results,
             )
 
             b, a = single_results.params
@@ -270,13 +273,7 @@ class MinimizingResult:
             minimizer_result=self.minimizer_result,
             param_df=self.param_df,
             dispersity_order=self.dispersity_order,
-            iqtaus=self.iqtaus,
-            taus=self.taus,
-            times=self.times,
-            framerate=self.framerate,
-            micrometre_per_pixel=self.micrometre_per_pixel,
-            temperature=self.temperature,
-            viscosity=self.viscosity,
+            analysis=self.analysis,
             dispersity_mode_fits=dispersity_mode_fits,
         )
 
@@ -375,8 +372,8 @@ class FitResult(MinimizingResult):
         num_delta_t_lines: int = 10,
     ) -> Figure:
 
-        times = self.times
-        iqtaus = self.iqtaus
+        times = self.analysis.times
+        iqtaus = self.analysis.iqtaus
         qs = self.param_df["q"]
 
         # Calculate fitted iqtaus
@@ -398,12 +395,12 @@ class FitResult(MinimizingResult):
                 qs,
                 iqtaus[i] / 512**2,
                 "o",
-                color=plt.cm.autumn_r(norm1(times[i])),
+                color=cc.cm.rainbow(norm1(times[i])),
             )
             plt.plot(qs, fitted_iqtaus[:, i] / 512**2, "-k")
 
         cbar1 = plt.colorbar(
-            plt.cm.ScalarMappable(norm=norm1, cmap=plt.cm.autumn_r),
+            plt.cm.ScalarMappable(norm=norm1, cmap=cc.cm.rainbow),
             fraction=0.05,
             pad=0.03,
             aspect=50,
@@ -425,19 +422,19 @@ class FitResult(MinimizingResult):
         )
 
         norm2 = matplotlib.colors.LogNorm()
-        norm2.autoscale(qs)
+        norm2.autoscale(delta_t_qs)
 
         for i, iq in enumerate(delta_t_qs):
             plt.plot(
                 times,
                 iqtaus[:, iq] / 512**2,
                 "o",
-                color=plt.cm.autumn_r(norm2(qs[i])),
+                color=cc.cm.rainbow(norm2(delta_t_qs[i])),
             )
             plt.plot(times, fitted_iqtaus[iq] / 512**2, "-k")
 
         cbar2 = plt.colorbar(
-            plt.cm.ScalarMappable(norm=norm2, cmap=plt.cm.autumn_r),
+            plt.cm.ScalarMappable(norm=norm2, cmap=cc.cm.rainbow),
             fraction=0.05,
             pad=0.03,
             aspect=50,
@@ -472,11 +469,10 @@ class FitResult(MinimizingResult):
         as_ = pd_nom(self.param_df["A"])
         bs = pd_nom(self.param_df["B"])
         qs = self.param_df["q"]
-        times = self.times
-        iqtaus = self.iqtaus
+        times = self.analysis.times
+        iqtaus = self.analysis.iqtaus
 
         tau_range = [dispersity_fit.fit.range.start, dispersity_fit.fit.range.stop]
-        qs_range = [qs[tau] for tau in tau_range]
 
         # Calculate fitted and experimental intermediate scattering functions
         fitted_iqtaus = array_image_structure_function_wrapper(
@@ -503,7 +499,7 @@ class FitResult(MinimizingResult):
         fig.set_size_inches(14, 6)
 
         norm = matplotlib.colors.Normalize()
-        norm.autoscale(qs_range)
+        norm.autoscale(qs)
 
         ax1 = plt.subplot(1, 2, 1)
         for i, iq in enumerate(delta_t_qs):
@@ -511,7 +507,7 @@ class FitResult(MinimizingResult):
                 times,
                 experiment_fs[iq, :],
                 "o",
-                color=plt.cm.autumn_r(norm(qs[iq])),
+                color=cc.cm.rainbow(norm(qs[iq])),
             )
             plt.plot(
                 times,
@@ -520,7 +516,7 @@ class FitResult(MinimizingResult):
             )
 
         cbar1 = plt.colorbar(
-            plt.cm.ScalarMappable(norm=norm, cmap=plt.cm.autumn_r),
+            plt.cm.ScalarMappable(norm=norm, cmap=cc.cm.rainbow),
             fraction=0.05,
             pad=0.03,
             aspect=50,
@@ -539,7 +535,7 @@ class FitResult(MinimizingResult):
                 qs[iq] ** 2 * times,
                 experiment_fs[iq, :],
                 "o",
-                color=plt.cm.autumn_r(norm(qs[iq])),
+                color=cc.cm.rainbow(norm(qs[iq])),
             )
 
             plt.plot(
@@ -548,15 +544,15 @@ class FitResult(MinimizingResult):
                 "-k",
             )
 
-        cbar1 = plt.colorbar(
-            plt.cm.ScalarMappable(norm=norm, cmap=plt.cm.autumn_r),
+        cbar2 = plt.colorbar(
+            plt.cm.ScalarMappable(norm=norm, cmap=cc.cm.rainbow),
             fraction=0.05,
             pad=0.03,
             aspect=50,
         )
 
-        cbar1.ax.get_yaxis().labelpad = 5
-        cbar1.ax.set_ylabel(r"$|\vec{q}| \ [μm ^{-1}]$", rotation=90)
+        cbar2.ax.get_yaxis().labelpad = 5
+        cbar2.ax.set_ylabel(r"$|\vec{q}| \ [μm ^{-1}]$", rotation=90)
 
         plt.xscale("log")
         plt.xlabel(r"$t |\vec{q}|^2 \ [s/μm^2]$")
@@ -583,13 +579,7 @@ class FitResult(MinimizingResult):
         particle_diameters: list[float] = []
         for mode in self.dispersity_mode_fits:
             particle_diameters.append(
-                diameter_calculator(
-                    mode.diffusion_coefficient,
-                    self.viscosity,
-                    self.temperature,
-                    self.micrometre_per_pixel,
-                    self.framerate,
-                )
+                diameter_calculator(mode.diffusion_coefficient, self.analysis.intensive_parameters)
             )
 
         return particle_diameters
@@ -640,21 +630,22 @@ class DDMAnalysis:
     taus: np.ndarray
     iqtaus: np.ndarray
 
-    framerate: float
-    temperature: float
-    viscosity: float
-    micrometre_per_pixel: float
+    intensive_parameters: IntensiveParameters
 
-    def tau_to_time(self, tau: int) -> float:
-        return tau / self.framerate
-
-    def taus_to_times(self, taus: np.ndarray) -> np.ndarray:
-        times: np.ndarray = taus / self.framerate
+    @property
+    def times(self) -> np.ndarray:
+        times: np.ndarray = self.taus / self.intensive_parameters.framerate.nominal_value
         return times
 
-    def iqtaus_to_qs(self, iqtaus: np.ndarray) -> np.ndarray:
-        nqs = iqtaus.shape[-1]
-        qs: np.ndarray = 2 * np.pi / (2 * nqs * self.micrometre_per_pixel) * np.arange(1, nqs + 1)
+    @property
+    def qs(self) -> np.ndarray:
+        nqs = self.iqtaus.shape[-1]
+        qs: np.ndarray = (
+            2
+            * np.pi
+            / (2 * nqs * self.intensive_parameters.micrometre_per_pixel.nominal_value)
+            * np.arange(1, nqs + 1)
+        )
 
         return qs
 
@@ -663,12 +654,12 @@ class DDMAnalysis:
         fig.set_dpi(150)
         fig.set_size_inches(10, 6)
 
-        qs = self.iqtaus_to_qs(self.iqtaus)
+        qs = self.qs
 
-        times = self.taus_to_times(self.taus)
+        times = self.times
         isfs = self.iqtaus[:, n_q]
 
-        plt.plot(times, isfs, "o")
+        plt.plot(times, isfs, "+")
 
         plt.xscale("log")
         plt.yscale("log")
@@ -803,8 +794,7 @@ class DDMAnalysis:
             method_sequence = ["leastsq"]
 
         iqtaus = self.iqtaus[: self.T_MAX]  # Don't fit last 6
-        taus = self.taus[: self.T_MAX]
-        times = self.taus_to_times(taus)
+        times = self.times[: self.T_MAX]
 
         fit_params = lmfit.Parameters()
 
@@ -894,7 +884,7 @@ class DDMAnalysis:
         pbar.close()
 
         df = self._minimizer_result_to_df(fit)
-        df["q"] = self.iqtaus_to_qs(iqtaus)
+        df["q"] = self.qs
 
         print("Done.")
 
@@ -902,13 +892,7 @@ class DDMAnalysis:
             minimizer_result=fit,
             param_df=df,
             dispersity_order=dispersity_order,
-            iqtaus=iqtaus,
-            taus=taus,
-            framerate=self.framerate,
-            micrometre_per_pixel=self.micrometre_per_pixel,
-            temperature=self.temperature,
-            viscosity=self.viscosity,
-            times=times,
+            analysis=self,
         )
 
         return result
@@ -951,25 +935,23 @@ class DDMAnalysis:
 
         return x
 
-    # TODO: Refactor
     def fit_image_structure_functions_monodisperse(self) -> tuple[np.ndarray, np.ndarray]:
-        assert self.iqtaus is not None
-        assert self.taus is not None
-
         nqs = self.iqtaus.shape[-1]
-        times = self.taus_to_times(self.taus)
+
+        times = self.times[: self.T_MAX]
+        iqtaus = self.iqtaus[: self.T_MAX]
 
         params = np.zeros([nqs, 3])  # 3 params
-        fitting_matrix = np.zeros(self.iqtaus[: self.T_MAX].T.shape)
+        fitting_matrix = np.zeros(iqtaus.T.shape)
 
-        for iq, iqtau in enumerate(self.iqtaus[: self.T_MAX].T):
+        for iq, iqtau in enumerate(iqtaus.T):
             params[iq] = scipy.optimize.leastsq(
                 self._isf_fitter,
                 [iqtau.ptp(), iqtau.min(), 1],
-                args=(times[: self.T_MAX], np.log(iqtau)),
+                args=(times, np.log(iqtau)),
             )[0]
 
-            fitting_matrix[iq] = np.exp(self._log_isf_monodisperse(params[iq], times[: self.T_MAX]))
+            fitting_matrix[iq] = np.exp(self._log_isf_monodisperse(params[iq], times))
 
         self.isf_fits = fitting_matrix
         self.isf_params = params
@@ -982,18 +964,11 @@ class DDM:
     def __init__(
         self,
         stack: Framestack,
-        framerate: float,
-        temperature: float,
-        viscosity: float,
-        micrometre_per_pixel: float,
+        intensive_parameters: IntensiveParameters,
         workers: Optional[int] = None,
     ) -> None:
         self.stack = stack
-
-        self.framerate = framerate
-        self.temperature = temperature
-        self.viscosity = viscosity
-        self.micrometre_per_pixel = micrometre_per_pixel
+        self.intensive_parameters = intensive_parameters
 
         self.tau_range: Optional[tuple[int, int]] = None
 
@@ -1014,7 +989,7 @@ class DDM:
         fig = plt.figure()
         plt.imshow(
             scipy.fft.fftshift(differential_spectrum),
-            "hot",
+            cc.cm.fire,
             vmin=0.0,
             vmax=differential_spectrum.max() / brightness,
         )
@@ -1032,7 +1007,7 @@ class DDM:
         fig = plt.figure()
         plt.imshow(
             scipy.fft.fftshift(average),
-            "hot",
+            cc.cm.fire,
             vmin=0.0,
             vmax=average.max() / brightness,
         )
@@ -1159,10 +1134,7 @@ class DDM:
         result = DDMAnalysis(
             taus=taus,
             iqtaus=iqtaus,
-            framerate=self.framerate,
-            temperature=self.temperature,
-            viscosity=self.viscosity,
-            micrometre_per_pixel=self.micrometre_per_pixel,
+            intensive_parameters=self.intensive_parameters,
         )
 
         return result

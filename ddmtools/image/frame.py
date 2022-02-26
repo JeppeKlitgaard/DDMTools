@@ -12,7 +12,7 @@ from matplotlib.figure import Figure
 from PIL import Image
 from tqdm.auto import tqdm
 
-from ddmtools.utils import get_centre_matrix
+from ddmtools.utils.number import get_centre_matrix
 
 Frame = np.ndarray
 ImageDimension = Tuple[int, int]
