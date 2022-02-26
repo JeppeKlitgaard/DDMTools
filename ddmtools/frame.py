@@ -104,18 +104,35 @@ class Framestack:
 
     @classmethod
     def from_folder(
-        cls, folder: Path, glob_pattern: str = "*.pgm", crop_target: Optional[ImageDimension] = None
+        cls,
+        folder: Path,
+        glob_pattern: str = "*.pgm",
+        crop_target: Optional[ImageDimension] = None,
+        max_frames: Optional[int] = None,
     ) -> Framestack:
         paths = sorted(folder.glob(glob_pattern))
+
+        if max_frames:
+            paths = paths[: (min(len(paths), max_frames) - 1)]
+
         accessors = [ImageFrameAccessor(path) for path in paths]
 
         return cls(accessors, shape=crop_target)
 
     @classmethod
-    def from_video(cls, path: Path, crop_target: Optional[ImageDimension] = None) -> Framestack:
+    def from_video(
+        cls,
+        path: Path,
+        crop_target: Optional[ImageDimension] = None,
+        max_frames: Optional[int] = None,
+    ) -> Framestack:
         video = cv2.VideoCapture(str(path))
 
         frame_count = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        if max_frames:
+            frame_count = min(frame_count, max_frames)
+
         accessors = [VideoFrameAccessor(video, i) for i in range(frame_count)]
 
         return cls(accessors, shape=crop_target)
